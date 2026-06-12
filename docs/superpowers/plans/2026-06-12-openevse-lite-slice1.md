@@ -438,90 +438,68 @@ git commit -m "lite: LittleFS WiFi-cred store + eraseConfig (device-only; no hos
 
 ---
 
-### Task 5: Enable FakeEVSE + expand env to compile the EVSE core
+### Task 5: ~~Enable FakeEVSE + EVSE core~~ — DROPPED (2026-06-12, author decision)
 
-**Files:**
-- Modify: `platformio.ini` (`[env:openevse_lite]` — add `-D FAKE_EVSE`, widen `build_src_filter`)
-- Reference: `src/main.cpp:86-102` (FAKE_EVSE wiring), `src/fake_evse.h`
-
-- [ ] **Step 1: Turn on FakeEVSE and widen the source filter**
-
-In `[env:openevse_lite]`, add `-D FAKE_EVSE` to `build_flags` and widen `build_src_filter` to bring in the EVSE core + FakeEVSE (still excluding heavy subsystems):
-
-```ini
-build_src_filter =
-  -<*>
-  +<lite/>
-  +<fake_evse.cpp>
-  +<evse_man.cpp> +<evse_monitor.cpp> +<event_log.cpp> +<openevse.cpp>
-```
-
-(Exact companion-object list is finalized by the linker in Step 2; add only what FakeEVSE + `EvseManager` transitively need. Do NOT add web/mqtt/ocpp/divert/ha/tsdb/lcd objects.)
-
-- [ ] **Step 2: Iterate the source filter to a clean link**
-
-Build repeatedly, adding only the minimal object each missing-symbol error names:
-
-```
-pio run -e openevse_lite 2>&1 | grep -E "undefined reference|error:"
-```
-Expected end state: links with FakeEVSE + `EvseManager` and none of the gated subsystems. Record the final `build_src_filter` in the commit message.
-
-- [ ] **Step 3: HW checkpoint (author runs)** — flash and confirm FakeEVSE ticks:
-
-Expected serial: FakeEVSE state machine logging (the `/fakeevse`-driven state from the existing FakeEVSE), proving `EvseManager` is talking to the in-firmware fake over `RAPI_PORT`.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add platformio.ini
-git commit -m "lite: enable FAKE_EVSE and compile the minimal EVSE core"
-```
+**Status: removed from the slice.** The author's direction is "we don't need FakeEVSE, small as possible." FakeEVSE was never on `feature/juicebox-lite` (the branch forked from plain master, pre-FakeEVSE; the feature lives only on the much larger `feature/esp32-modernization` stack). Rather than graft `EvseManager` + the EVSE core onto the minimal lite branch, slice-1 serves a **shim-backed `/status`** built from the chip/WiFi data the lite shims already expose — no `EvseManager`, no RAPI controller. A real OpenEVSE controller link (RAPI over the JuiceBox's serial port) is a later slice. Task 6 below absorbs the boot-path + `/status` work without any EVSE core.
 
 ---
 
-### Task 6: Real lite boot path + minimal `/status` route
+### Task 6: Lite boot path + minimal shim-backed `/status` route
 
 **Files:**
 - Create: `src/lite/main_lite.cpp` (replaces `spike_main.cpp` as the entry)
 - Create: `src/lite/web_server_lite.cpp`, `src/lite/web_server_lite.h`
-- Modify: `platformio.ini` (`build_src_filter`: drop `spike_main.cpp`, add `main_lite.cpp` + `web_server_lite.cpp`)
+- Modify: `platformio.ini` (`[env:openevse_lite]` `build_src_filter`: drop `spike_main.cpp`, add `main_lite.cpp` + `web_server_lite.cpp`)
 - Delete: `src/lite/spike_main.cpp`
-- Reference: the existing status JSON builder used by `/status` in `src/web_server.cpp`
+- Reference: existing `src/lite/spike_main.cpp` (the proven vendored-Mongoose `mg_mgr`/`mg_bind`/`ev_handler` pattern), `src/lite/espal_lite.h` (`ESPAL` shim), `src/lite/lite_config_store.h`
+
+The networking core is the **vendored `lib/MongooseLite` C core** that T1 actually shipped (NOT ArduinoMongoose / `MongooseHttpServer` — that wrapper is not in this build). Use the same `mg_mgr` + `mg_bind` + `mg_set_protocol_http_websocket` + `ev_handler` idiom `spike_main.cpp` already proves.
 
 - [ ] **Step 1: Minimal server + `/status` route**
 
-`src/lite/web_server_lite.cpp` stands up `MongooseHttpServer` (the ArduinoMongoose wrapper) on `:80` and registers exactly one handler for `/status` that serializes the EVSE state from the live `EvseManager` (FakeEVSE-backed) into the same JSON shape the full firmware emits. Reuse the existing status-building helper rather than re-deriving fields; if it is not separable from `web_server.cpp`, extract a small `build_status_json(JsonDocument&, EvseManager&)` free function in this task and call it from both (note the extraction in the commit). Optional `/` returns `200 "openevse-lite"`.
+`src/lite/web_server_lite.h` declares `void web_server_lite_begin();` and `void web_server_lite_loop();`. `src/lite/web_server_lite.cpp` stands up the Mongoose manager on `:80` with one `ev_handler` that routes on `mg_vcmp(&hm->uri, ...)`:
+- `GET /status` → `mg_send_head(nc, 200, len, "Content-Type: application/json")` + a small JSON object built **from the lite shims only** (no `EvseManager`): `id` (`ESPAL.getLongId()`), `chip` (`ESPAL.getChipInfo()`), `free_heap` (`ESPAL.getFreeHeap()`), `ip` (dotted `WiFi.localIP()`), `rssi` (`WiFi.RSSI()`), `uptime` (`millis()/1000`). Build the JSON with `ArduinoJson` (`StaticJsonDocument<256>` + `serializeJson` to a `String`), matching the idiom in `src/lite/lite_config_store.cpp`.
+- any other URI → `mg_http_send_error(nc, 404, NULL)` (or `mg_send_head` 404), and `GET /` → `200 "openevse-lite"`.
+- end every response with `nc->flags |= MG_F_SEND_AND_CLOSE;` (as the spike does).
+
+Keep the `mg_mgr` static to the translation unit; `web_server_lite_begin()` does `mg_mgr_init` + `mg_bind` + `mg_set_protocol_http_websocket`; `web_server_lite_loop()` does `mg_mgr_poll(&mgr, 0)`.
 
 - [ ] **Step 2: The lite boot path**
 
-`src/lite/main_lite.cpp` `setup()`: `Serial.begin` → `ESPAL.begin()` → `lite_random_set_backend(efm32_trng_fill)` → `lite_config_begin()` → load creds (fall back to `LITE_WIFI_SSID/PASS` build flags if none) → `WiFi.begin()` → wait for `WL_CONNECTED` → `evse.begin()` → `web_server_lite_begin(evse)`. `loop()`: `mg_mgr_poll()` + `evse`/`rapiSender` loop ticks (mirror `src/main.cpp:260-261`).
+`src/lite/main_lite.cpp` `setup()`: `Serial.begin(115200)` → `ESPAL.begin()` → `lite_config_begin()` → `LiteWifiConfig wc; if (!lite_config_load_wifi(wc)) { wc.ssid = LITE_WIFI_SSID; wc.pass = LITE_WIFI_PASS; }` → `WiFi.begin(wc.ssid.c_str(), wc.pass.c_str())` → wait for `WL_CONNECTED` (print dots, same as spike) → print `WiFi up, IP=…` → `web_server_lite_begin()` → print `status server on :80`. `loop()`: `web_server_lite_loop();` (plus an optional periodic heap print, keep it minimal). The TRNG/`lite_random` backend is **not** wired this slice — TLS is off (`MG_ENABLE_SSL=0`) and nothing consumes random bytes; leave a one-line comment noting it's deferred to a later slice.
 
 - [ ] **Step 3: Swap the entry in the env**
 
+In `[env:openevse_lite]`:
 ```ini
 build_src_filter =
   -<*>
-  +<lite/>            ; now includes main_lite.cpp + web_server_lite.cpp, not spike_main
+  +<lite/>
   -<lite/spike_main.cpp>
-  +<fake_evse.cpp> +<evse_man.cpp> +<evse_monitor.cpp> +<event_log.cpp> +<openevse.cpp>
 ```
-Delete `src/lite/spike_main.cpp`.
+This compiles every `src/lite/*.cpp` (espal_lite, lite_random, lite_config_store, web_server_lite, main_lite) except the retired spike. Delete `src/lite/spike_main.cpp`. No new `lib_deps` — the vendored `lib/MongooseLite` is already on the include path via `-I lib/MongooseLite`.
 
-- [ ] **Step 4: HW acceptance (author runs) — the slice goal**
+- [ ] **Step 4: Local build to a clean link (implementer runs)**
+
+```
+pio run -e openevse_lite 2>&1 | grep -E "undefined reference|error:" || echo LINK_OK
+```
+Expected: `LINK_OK` — all lite TU's compile and link with only the vendored Mongoose + LibreTiny WiFi/LittleFS/ArduinoJson. If a missing symbol names a heavy ESP-only object, the LITE gate missed something — fix the gate, do not widen the filter to pull in ESP32 subsystems.
+
+- [ ] **Step 5: HW acceptance (author runs) — the slice goal**
 
 ```
 pio run -e openevse_lite -t upload && pio device monitor -e openevse_lite
 curl http://<ip>/status
 ```
-Expected: serial shows config load + `WiFi up, IP=…` + `status server on :80`; `curl /status` returns the FakeEVSE-backed JSON (state, amps, voltage matching the FakeEVSE defaults). Reboot and confirm WiFi re-associates from persisted creds (Task 4 validation).
+Expected: serial shows `WiFi up, IP=…` + `status server on :80`; `curl /status` returns the shim-backed JSON (`id`/`chip`/`free_heap`/`ip`/`rssi`/`uptime`). Save creds via the config store path is validated when a later slice adds a write route; for now reboot and confirm WiFi re-associates from the build-flag fallback (the store returns "no creds yet" until something writes them).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/lite/main_lite.cpp src/lite/web_server_lite.cpp src/lite/web_server_lite.h platformio.ini
 git rm src/lite/spike_main.cpp
-git commit -m "lite: real boot path + minimal /status over Mongoose against FakeEVSE"
+git commit -m "lite: real boot path + minimal shim-backed /status over vendored Mongoose"
 ```
 
 ---
