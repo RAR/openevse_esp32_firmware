@@ -15,11 +15,12 @@
 //    internal SAR-ADC noise entropy source (bootloader_random_enable) at boot so
 //    the HWRNG is seeded from on-chip noise instead.
 #include <stddef.h>
+#ifndef OPENEVSE_LITE
 #include <esp_random.h>
-
 extern "C" int mg_ssl_if_mbed_random(void *ctx, unsigned char *buf, size_t len)
 {
   (void) ctx;
   esp_fill_random(buf, len);
   return 0;
 }
+#endif
