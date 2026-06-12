@@ -1,11 +1,16 @@
 #ifdef OPENEVSE_LITE
 #include "espal_lite.h"
 #include "espal_lite_format.h"
-#include "lite_config_store.h"
 
-// EFM32 DEVINFO unique id source: DEVINFO->UNIQUEL (bits 31:0) and DEVINFO->UNIQUEH (bits 63:32).
-// LibreTiny exposes this via lt_cpu_get_uid64() — confirm exact symbol against the LibreTiny
-// WGM160P port at integration time before relying on DEVINFO struct access directly.
+#include <libretiny.h>
+#include "lt_family.h"   // pulls in em_device.h -> DEVINFO struct (Gecko SDK)
+
+// EFM32 DEVINFO unique id source: DEVINFO->UNIQUEL (bits 31:0) and DEVINFO->UNIQUEH
+// (bits 63:32). LibreTiny's lt_cpu_get_unique_id() returns only the low 24 bits, so
+// read DEVINFO directly to recover the full 64-bit id.
+static inline uint64_t lite_efm32_uid64() {
+  return ((uint64_t)DEVINFO->UNIQUEH << 32) | (uint64_t)DEVINFO->UNIQUEL;
+}
 
 void EspalLite::begin() {
   // Nothing to initialise on the EFM32 side for ESPAL itself; peripherals
@@ -17,13 +22,12 @@ uint32_t EspalLite::getFreeHeap() {
 }
 
 String EspalLite::getShortId() {
-  // lt_cpu_get_uid64() returns the 64-bit EFM32 DEVINFO unique id.
-  uint64_t uid = lt_cpu_get_uid64();
+  uint64_t uid = lite_efm32_uid64();
   return String(lite_format_short_id(uid).c_str());
 }
 
 String EspalLite::getLongId() {
-  uint64_t uid = lt_cpu_get_uid64();
+  uint64_t uid = lite_efm32_uid64();
   return String(lite_format_long_id(uid).c_str());
 }
 
@@ -41,9 +45,8 @@ void EspalLite::reset() {
 }
 
 void EspalLite::eraseConfig() {
-  // Delegate to the Task-4 LittleFS config store (replaces the ESP-only
-  // esp_partition erase for the lite build).
-  lite_config_erase();
+  // Persistence is deferred this slice (the LibreTiny fork ships no LittleFS),
+  // so config-erase is a no-op stub. WiFi creds come from build flags.
 }
 
 EspalLite ESPAL;
