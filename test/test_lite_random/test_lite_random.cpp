@@ -13,3 +13,8 @@ TEST_CASE("zero length is a no-op and does not crash") {
   lite_random_bytes(nullptr, 0);
   CHECK(true);
 }
+TEST_CASE("null buffer with nonzero len is a safe no-op") {
+  lite_random_set_backend([](uint8_t *b, size_t n){ for (size_t i=0;i<n;i++) b[i]=0x5A; });
+  lite_random_bytes(nullptr, 4);   // must not crash, must not deref
+  CHECK(true);
+}
