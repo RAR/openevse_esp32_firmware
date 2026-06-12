@@ -84,22 +84,34 @@ cleanly. We expect to confirm Route 1 on the first task and never reach here.
 ## Slice 1 scope
 
 ### In scope
-- New `[env:juicebox_40]`: `platform = libretiny` (pinned to the author's fork
-  carrying PR #387), `board = wgm160p-juicebox-40`, `framework = arduino`.
+- New `[env:openevse_lite]`: `platform = libretiny` (pinned to the author's fork
+  carrying PR #387), `board = wgm160p-juicebox-40`, `framework = arduino`. Env
+  name is generic (`openevse_lite`) so other LibreTiny boards can follow; the
+  board is identified separately by `-D JUICEBOX_40`.
 - New `-D OPENEVSE_LITE` umbrella gate + `-D JUICEBOX_40` board flag.
 - `-D FAKE_EVSE` on (EVSE source).
 - A 2 MB single-app, no-dual-OTA flash layout (LibreTiny FAL/FlashDB based),
   leaving room for the WF200 firmware blob + a config region.
-- EFM32/LibreTiny backing for the ~9 ESPAL calls (ESPAL fork target *or* a thin
-  `src/` shim under the LITE gate — chosen in the plan).
+- **EFM32/LibreTiny backing for the ~9 ESPAL calls = a thin `src/` shim** under
+  `-D OPENEVSE_LITE` (self-contained in this repo, fast to iterate; promotable to
+  the ESPAL fork later). NOT a cross-repo ESPAL change in slice 1.
 - TRNG0-backed RNG to replace the `esp_random.h` calls (minimal in slice 1; no
   TLS yet).
 - ArduinoMongoose on LibreTiny lwIP via Route 1; one plain-HTTP listener on `:80`.
 - A **minimal route set** (`/status`, optional `/` health) under the LITE gate —
   NOT the full `web_server.cpp` — fed by the existing status builder against
   FakeEVSE.
-- `app_config` load/persist of WiFi creds to EFM32 flash via LibreTiny LittleFS;
-  the `esp_partition` erase path swapped for a LibreTiny flash erase.
+- `app_config` load/persist of WiFi creds to EFM32 flash via **LibreTiny
+  LittleFS** (the firmware already leans on LittleFS — least divergence); the
+  `esp_partition` erase path swapped for a LibreTiny flash erase.
+
+### WiFi provisioning assumption (softAP dependency)
+LibreTiny PR #387 is **STA-only** today (softAP is a follow-on the author is
+actively building). Slice 1 therefore assumes STA credentials are
+**pre-provisioned** (compiled-in or written to config out of band) and connects
+in STA mode. AP-mode provisioning / captive portal rides on the in-progress
+softAP work and is explicitly NOT a slice-1 dependency — slice 1 must not block
+on it.
 
 ### Gated OFF in slice 1
 OCPP, divert, Tesla, emoncms, Home Assistant, tsdb, RFID, LCD/TFT, **OTA**, and
@@ -137,11 +149,11 @@ pilot/relay/GFCI control, and OTA / dual-bank.
 4. **Build depends on the unmerged LibreTiny fork** (PR #387 branch) — pin it
    explicitly in `platformio.ini`.
 
-## Open implementation choices (resolved in the plan, not here)
+## Resolved choices
 
-- ESPAL: add an EFM32/LibreTiny target to the ESPAL fork vs. a thin `src/` shim
-  under `-D OPENEVSE_LITE`.
-- Env naming: `juicebox_40` (board-specific) vs. `openevse_lite` (generic). This
-  doc uses `juicebox_40`.
-- Config store: LibreTiny LittleFS vs. its FlashDB/Preferences layer for the
-  config JSON.
+- **Env name:** `openevse_lite` (generic; board distinguished by `-D JUICEBOX_40`).
+- **ESPAL seam:** thin `src/` shim under `-D OPENEVSE_LITE` (not a cross-repo
+  ESPAL change in slice 1).
+- **Config store:** LibreTiny LittleFS for the config JSON.
+- **WiFi:** STA-only with pre-provisioned creds; AP/softAP provisioning is out of
+  scope and tracked against the author's in-progress softAP work.
