@@ -103,3 +103,4 @@ divert_sim/epoxyeepromdata
 *.pem
 *.pem
 *.orig
+platformio_override.ini

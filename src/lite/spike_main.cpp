@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>          // LibreTiny Arduino WiFi
+// platform_custom.h is pulled in by mongoose.h (CS_P_CUSTOM path) via -I lib/MongooseLite.
+// No -include flag: LibreTiny's SCons base.py chokes on -include as a CCFLAGS tuple.
 #include "mongoose.h"
 
 static struct mg_mgr s_mgr;
@@ -21,6 +23,7 @@ void setup() {
   Serial.printf("\n[lite-spike] boot\n");
 
   WiFi.begin(LITE_WIFI_SSID, LITE_WIFI_PASS);
+  // Spike-only: blocks forever on bad creds. T4/T6 replace this with config-stored creds + softAP fallback.
   while (WiFi.status() != WL_CONNECTED) { delay(250); Serial.print('.'); }
 
   // LibreTiny's arduino::IPAddress has no toString()/c_str(); use printTo() or raw bytes.
