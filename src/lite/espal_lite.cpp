@@ -1,6 +1,7 @@
 #ifdef OPENEVSE_LITE
 #include "espal_lite.h"
 #include "espal_lite_format.h"
+#include "lite_config_store.h"
 
 // EFM32 DEVINFO unique id source: DEVINFO->UNIQUEL (bits 31:0) and DEVINFO->UNIQUEH (bits 63:32).
 // LibreTiny exposes this via lt_cpu_get_uid64() — confirm exact symbol against the LibreTiny
@@ -40,8 +41,9 @@ void EspalLite::reset() {
 }
 
 void EspalLite::eraseConfig() {
-  // TODO: delegate to Task-4 config store (LittleFS WiFi-cred store);
-  // do not invent the store API here — wire up once Task 4 is merged.
+  // Delegate to the Task-4 LittleFS config store (replaces the ESP-only
+  // esp_partition erase for the lite build).
+  lite_config_erase();
 }
 
 EspalLite ESPAL;
