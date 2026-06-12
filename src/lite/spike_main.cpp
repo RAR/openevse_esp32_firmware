@@ -6,6 +6,15 @@
 
 static struct mg_mgr s_mgr;
 
+// DIAGNOSTIC (T1 heap-exhaustion investigation): FreeRTOS heap accounting.
+extern "C" size_t xPortGetFreeHeapSize(void);
+extern "C" size_t xPortGetMinimumEverFreeHeapSize(void);
+static void heap(const char *where) {
+  Serial.printf("[heap] %-16s free=%u min=%u\n", where,
+                (unsigned)xPortGetFreeHeapSize(),
+                (unsigned)xPortGetMinimumEverFreeHeapSize());
+}
+
 // MG_ENABLE_CALLBACK_USERDATA=1 (default in this mongoose build), so handlers
 // take a 4th void* user_data argument.
 static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_data) {
@@ -21,6 +30,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.printf("\n[lite-spike] boot\n");
+  heap("boot");
 
   WiFi.begin(LITE_WIFI_SSID, LITE_WIFI_PASS);
   // Spike-only: blocks forever on bad creds. T4/T6 replace this with config-stored creds + softAP fallback.
@@ -30,15 +40,21 @@ void setup() {
   IPAddress ip = WiFi.localIP();
   Serial.printf("\n[lite-spike] WiFi up, IP=%u.%u.%u.%u\n",
                 ip[0], ip[1], ip[2], ip[3]);
+  heap("wifi-up");
 
   mg_mgr_init(&s_mgr, NULL);
+  heap("mgr-init");
   // mg_bind takes (mgr, addr, handler, user_data) when MG_ENABLE_CALLBACK_USERDATA=1.
   struct mg_connection *c = mg_bind(&s_mgr, "80", ev_handler, NULL);
+  heap("after-bind");
   if (!c) { Serial.println("[lite-spike] mg_bind FAILED"); return; }
   mg_set_protocol_http_websocket(c);
+  heap("after-proto");
   Serial.println("[lite-spike] HTTP listening on :80");
 }
 
 void loop() {
+  static uint32_t n = 0;
   mg_mgr_poll(&s_mgr, 100);
+  if ((n++ % 20) == 0) heap("loop");   // ~every 2s
 }
