@@ -16,6 +16,17 @@
 #include "evse_man.h"
 #include "event_log.h"
 
+// WiFi creds: real values arrive via PLATFORMIO_BUILD_FLAGS (-D LITE_WIFI_SSID=...).
+// When unset, fall back to the placeholder *_DEFAULT macros from platformio.ini. Using a
+// separate default macro (rather than re-defining LITE_WIFI_SSID in the .ini) keeps the real
+// value from colliding with a placeholder on the command line — no "redefined" warning.
+#ifndef LITE_WIFI_SSID
+#define LITE_WIFI_SSID LITE_WIFI_SSID_DEFAULT
+#endif
+#ifndef LITE_WIFI_PASS
+#define LITE_WIFI_PASS LITE_WIFI_PASS_DEFAULT
+#endif
+
 EventLog eventLog;
 EvseManager evse(RAPI_PORT, eventLog);
 
