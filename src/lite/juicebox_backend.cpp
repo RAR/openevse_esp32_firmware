@@ -77,7 +77,8 @@ void JuiceBoxBackend::sendKeepalive() {
   // Advertise the deliberate safe limit, not the MCU's reported max. juicebox_build_amps_set
   // clamps to [0,79]; the MCU further clamps <6 up to the 6 A J1772 floor.
   char buf[32];
-  size_t n = juicebox_build_amps_set(_chargeLimit, buf, sizeof(buf));
+  int amps = _enabled ? _chargeLimit : 6; // Disabled => 6 A floor (see setState TODO)
+  size_t n = juicebox_build_amps_set(amps, buf, sizeof(buf));
   if (n) _port.write((const uint8_t *)buf, n);
 }
 

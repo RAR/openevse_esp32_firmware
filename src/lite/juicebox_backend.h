@@ -25,6 +25,18 @@ public:
   void setChargeCurrent(int amps) override { _chargeLimit = amps; }
   // Distinct from getAmps() (the Atmel's reported max/rating in $ES field A).
   int  getChargeCurrent() const override { return _chargeLimit; }
+  // TODO(fresh-unit capture): the JuiceBox $-protocol has NO host stop command
+  // (RE-confirmed). Disabled maps to the 6 A floor (cannot truly open the
+  // contactor). When the real stop command is captured from a fresh unit, wire
+  // it HERE — this is the only place to change.
+  void setState(EvseState s) override { _enabled = (s != EvseState::Disabled); }
+  bool isCharging() const override { return juicebox_map_state(_status.state) == LiteEvseState::Charging; }
+  int  getMinCurrent() const override { return 6; }
+  int  getMaxHardwareCurrent() const override { return _maxHwCurrent; }
+  void setMaxHardwareCurrent(int a) override { _maxHwCurrent = a; }
+  int  getTemperature() const override { return _status.temp; }
+  bool isTemperatureValid() const override { return _status.valid; }
+  int  getEvseState() const override { return _status.state; }
   void addStatusFields(JsonDocument &doc) const override;
 
 private:
@@ -43,6 +55,8 @@ private:
   // Charge-current limit (A) advertised by the keepalive. Safe 6 A J1772 floor by default;
   // a future control feature will make this settable. NEVER auto-track the MCU's reported max.
   int            _chargeLimit    = 6;
+  bool _enabled = true;    // Slice 1.5: Disabled => advertise the 6 A floor (no true stop cmd; see setState)
+  int  _maxHwCurrent = 48; // service-max rating; seeded by the manager from config
   char _hw[24] = {0};
   char _fw[16] = {0};
   char _pv[8]  = {0};
