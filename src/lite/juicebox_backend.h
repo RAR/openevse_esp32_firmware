@@ -28,10 +28,13 @@ private:
 
   Stream        &_port;
   JuiceBoxParser _parser;
+  // SAFETY: zero-init => _status.valid starts false, which (with _everRx) gates
+  // sendKeepalive() — no TX can occur before a real $ES is parsed. Do not add a
+  // constructor to JuiceBoxStatus that leaves `valid` indeterminate.
   JuiceBoxStatus _status = {};
   unsigned long  _lastRxMillis   = 0;
   unsigned long  _lastBeatMillis = 0;
-  bool           _everRx         = false;
+  bool           _everRx         = false;   // flips true only after a frame is received
   char _hw[24] = {0};
   char _fw[16] = {0};
   char _pv[8]  = {0};
