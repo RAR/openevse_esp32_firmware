@@ -41,7 +41,8 @@ private:
 // Decode a $ES payload (e.g. "S00,L00,T00,H00,A00,P000,F00") into JuiceBoxStatus.
 bool juicebox_parse_es(const char *payload, uint16_t len, JuiceBoxStatus &out);
 
-// Map a raw JB S-field code onto the canonical state (codes confirmed in Task 1).
+// Map a raw JB S-field code onto the canonical state (code values are LIKELY per
+// the Task 1 RE note — only the 0..5 range is confirmed; HW-verify the mapping).
 LiteEvseState juicebox_map_state(int raw);
 
 // Build "$<type><LLL hex>:<payload>" into buf. Returns bytes written, 0 on overflow.
