@@ -1,5 +1,6 @@
 #ifdef OPENEVSE_LITE
 #include "lite_evse_manager.h"
+#include <Arduino.h>
 
 LiteEvseManager::LiteEvseManager(LiteEvseBackend &backend)
   : _backend(backend), _claimsVersion(0),
@@ -101,5 +102,9 @@ void LiteEvseManager::apply() {
   }
   if (_lastCharging && !charging) { _sessionComplete.fire(); }
   _lastCharging = charging;
+}
+
+void LiteEvseManager::loop() {
+  _energy.tick(_backend.getPower(), _backend.isCharging(), millis());
 }
 #endif

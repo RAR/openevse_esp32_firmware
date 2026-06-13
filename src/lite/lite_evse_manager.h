@@ -4,6 +4,7 @@
 #include "lite_evse_backend.h"
 #include "lite_evse_arbitrate.h"
 #include "lite_charge_policy.h"
+#include "lite_session_energy.h"
 
 #define LITE_EVSE_MAX_CLAIMS 8
 
@@ -24,6 +25,10 @@ public:
   void setTargetChargeCurrent(uint32_t a) { _target.setChargeCurrent(a); apply(); }
   void setTargetMaxCurrent(uint32_t a)    { _target.setMaxCurrent(a); _backend.setMaxHardwareCurrent((int)a); apply(); }
 
+  // Periodic tick: ticks the session-energy accumulator from live backend power.
+  // Call once per main-loop iteration (main_lite.cpp), alongside backend.loop().
+  void loop();
+
   EvseState getState(EvseClient client = EvseClient_NULL);
   uint32_t  getChargeCurrent(EvseClient client = EvseClient_NULL);
   uint32_t  getMaxCurrent(EvseClient client = EvseClient_NULL);
@@ -35,6 +40,13 @@ public:
   int  getMinCurrent() const         { return _backend.getMinCurrent(); }
   int  getMaxHardwareCurrent() const { return _backend.getMaxHardwareCurrent(); }
   int  getEvseState() const          { return _backend.getEvseState(); }
+  int           getPower() const       { return _backend.getPower(); }
+  LiteEvseState getDeviceState() const { return _backend.getState(); }
+
+  uint32_t getSessionWattSeconds() const { return _energy.wattSeconds(); }
+  uint32_t getSessionWattHours()   const { return _energy.wattHours(); }
+  uint32_t getSessionElapsed()     const { return _energy.elapsedSecs(); }
+
   void addStatusFields(JsonDocument &d) const { _backend.addStatusFields(d); }
 
   void onStateChange(MicroTasks::EventListener *l)     { _stateChange.Register(l); }
@@ -53,8 +65,9 @@ private:
     void fire() { Trigger(); }
   };
 
-  LiteEvseBackend &_backend;
-  EvseProperties   _target;
+  LiteEvseBackend  &_backend;
+  LiteSessionEnergy _energy;
+  EvseProperties    _target;
   EvseClaim        _claims[LITE_EVSE_MAX_CLAIMS];
   uint8_t          _claimsVersion;
   EvseState        _lastResolvedState;
