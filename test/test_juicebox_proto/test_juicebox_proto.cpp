@@ -57,7 +57,7 @@ TEST_CASE("an over-long runaway line does not overflow") {
 
 TEST_CASE("decodes all $ES fields including the 3-digit power field") {
   JuiceBoxStatus s;
-  REQUIRE(juicebox_parse_es("S02,L01,T31,H00,A24,P240,F00", 27, s));
+  REQUIRE(juicebox_parse_es("S02,L01,T31,H00,A24,P240,F00", 28, s));
   CHECK(s.valid);
   CHECK(s.state == 2);
   CHECK(s.line  == 1);
@@ -87,4 +87,49 @@ TEST_CASE("maps JB state codes to canonical states (Task 1 LIKELY map, HW-verify
   CHECK(juicebox_map_state(5) == LiteEvseState::Error);
   CHECK(juicebox_map_state(4)  == LiteEvseState::Unknown);
   CHECK(juicebox_map_state(99) == LiteEvseState::Unknown);
+}
+
+TEST_CASE("build_frame emits $<type><3hex len>:<payload>") {
+  char buf[64];
+  size_t n = juicebox_build_frame("PV", "20", buf, sizeof(buf));
+  REQUIRE(n > 0);
+  CHECK(strcmp(buf, "$PV002:20") == 0);
+}
+
+TEST_CASE("build_frame round-trips through the parser") {
+  char buf[64];
+  REQUIRE(juicebox_build_frame("ES", "S00,A00", buf, sizeof(buf)) > 0);
+  char line[80]; snprintf(line, sizeof(line), "%s\r", buf);
+  JuiceBoxParser p; JuiceBoxFrame f; bool got = false;
+  for (char *c = line; *c; ++c) if (p.feed((uint8_t)*c, f)) got = true;
+  REQUIRE(got);
+  CHECK(strcmp(f.type, "ES") == 0);
+  CHECK(strcmp(f.payload, "S00,A00") == 0);
+}
+
+TEST_CASE("build_frame refuses an undersized buffer") {
+  char buf[4];
+  CHECK(juicebox_build_frame("PV", "20", buf, sizeof(buf)) == 0);
+}
+
+TEST_CASE("amps-set builds a 2-digit payload and round-trips") {
+  char buf[32];
+  size_t n = juicebox_build_amps_set(24, buf, sizeof(buf));
+  REQUIRE(n > 0);
+  char line[40]; snprintf(line, sizeof(line), "%s\r", buf);
+  JuiceBoxParser p; JuiceBoxFrame f; bool got = false;
+  for (char *c = line; *c; ++c) if (p.feed((uint8_t)*c, f)) got = true;
+  REQUIRE(got);
+  CHECK(strcmp(f.payload, "24") == 0);
+  CHECK(f.len == 2);
+}
+
+TEST_CASE("amps-set clamps an over-limit value to 79") {
+  char buf[32];
+  REQUIRE(juicebox_build_amps_set(100, buf, sizeof(buf)) > 0);
+  char line[40]; snprintf(line, sizeof(line), "%s\r", buf);
+  JuiceBoxParser p; JuiceBoxFrame f; bool got = false;
+  for (char *c = line; *c; ++c) if (p.feed((uint8_t)*c, f)) got = true;
+  REQUIRE(got);
+  CHECK(strcmp(f.payload, "79") == 0);
 }

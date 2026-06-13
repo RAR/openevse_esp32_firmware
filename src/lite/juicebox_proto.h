@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include "lite_evse_state.h"
 
-static const size_t JB_TYPE_LEN    = 2;
-static const size_t JB_MAX_PAYLOAD = 80;
+inline constexpr size_t JB_TYPE_LEN    = 2;
+inline constexpr size_t JB_MAX_PAYLOAD = 80;
 
 // One decoded protocol frame: 2-char type + NUL-terminated payload.
 struct JuiceBoxFrame {
@@ -47,5 +47,10 @@ LiteEvseState juicebox_map_state(int raw);
 // Build "$<type><LLL hex>:<payload>" into buf. Returns bytes written, 0 on overflow.
 size_t juicebox_build_frame(const char *type, const char *payload, char *buf, size_t buflen);
 
-// Build the keep-alive heartbeat frame (exact bytes per Task 1). Returns bytes written.
-size_t juicebox_build_heartbeat(char *buf, size_t buflen);
+// Build the host->MCU amps-set command into buf ("$<type>002:NN"). Doubles as the
+// comm-watchdog keepalive: re-sending the MCU's reported amps is an idempotent no-op
+// that holds it online. `amps` is clamped to [0,79] (the MCU rejects >= 80).
+// Returns bytes written, 0 on overflow.
+// NOTE: the command TYPE bytes are UNCONFIRMED (need a live UART capture); see
+// docs/superpowers/notes/2026-06-13-juicebox-protocol-re.md.
+size_t juicebox_build_amps_set(int amps, char *buf, size_t buflen);

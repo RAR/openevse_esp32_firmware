@@ -104,3 +104,26 @@ bool JuiceBoxParser::feed(uint8_t b, JuiceBoxFrame &out) {
   }
   return false;
 }
+
+size_t juicebox_build_frame(const char *type, const char *payload, char *buf, size_t buflen) {
+  if (!type || strlen(type) != JB_TYPE_LEN) return 0;
+  size_t plen = payload ? strlen(payload) : 0;
+  if (plen > 0xFFF) return 0;
+  size_t need = 1 + JB_TYPE_LEN + 3 + 1 + plen + 1;   // $ TT LLL : payload NUL
+  if (buflen < need) return 0;
+  int n = snprintf(buf, buflen, "$%s%03X:%s", type, (unsigned)plen, payload ? payload : "");
+  return (n > 0 && (size_t)n < buflen) ? (size_t)n : 0;
+}
+
+// UNCONFIRMED host->MCU amps-set command type. RE (Task 1) shows host commands are
+// 'S'-class and the amps command "contains L"; the exact bytes need a live UART
+// capture (the ATmega is held in reset). Change this ONE constant once confirmed.
+static const char JB_AMPS_CMD_TYPE[] = "SL";
+
+size_t juicebox_build_amps_set(int amps, char *buf, size_t buflen) {
+  if (amps < 0)  amps = 0;
+  if (amps > 79) amps = 79;                 // MCU rejects >= 80
+  char payload[3];
+  snprintf(payload, sizeof(payload), "%02d", amps);
+  return juicebox_build_frame(JB_AMPS_CMD_TYPE, payload, buf, buflen);
+}
