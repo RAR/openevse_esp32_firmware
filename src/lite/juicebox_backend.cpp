@@ -56,14 +56,39 @@ static void copy_bounded(char *dst, size_t cap, const char *src, uint16_t len) {
   dst[n] = '\0';
 }
 
+#ifdef JB_DEBUG
+// Copy `src` into `dst`, replacing every '$' with '#'. The LT debug log shares the
+// physical UART with the JuiceBox protocol line, and the Atmel resyncs its parser on
+// '$' — so a literal '$' in a log string would look like a frame-start and corrupt
+// framing. Obscure it. Always NUL-terminates.
+static void jb_log_safe(char *dst, size_t cap, const char *src) {
+  size_t i = 0;
+  for (; src[i] && i + 1 < cap; ++i) dst[i] = (src[i] == '$') ? '#' : src[i];
+  dst[i] = '\0';
+}
+#endif
+
 void JuiceBoxBackend::handleFrame(const JuiceBoxFrame &f) {
 #ifdef JB_DEBUG
-  // Bench-debug echo of every received Atmel frame to VCOM (raw payload incl. any
-  // foreign :tag:). Protocol-safe: the Atmel ignores non-$ log noise. Built only in
-  // [env:openevse_lite_debug]; compiled out of the production env.
-  LT_I("JBRX [%s] len=%u: %s", f.type, (unsigned)f.len, f.payload);
+  // Bench-debug echo of every received Atmel frame (raw payload incl. any foreign
+  // :tag:), with '$' obscured (see jb_log_safe). Built only in [env:openevse_lite_debug];
+  // compiled out of the production env.
+  {
+    char safe[JB_MAX_PAYLOAD + 1];
+    jb_log_safe(safe, sizeof(safe), f.payload);
+    LT_I("JBRX [%s] len=%u: %s", f.type, (unsigned)f.len, safe);
+  }
 #endif
-  if      (!strcmp(f.type, "ES")) { juicebox_parse_es(f.payload, f.len, _status); }
+  if      (!strcmp(f.type, "ES")) {
+    juicebox_parse_es(f.payload, f.len, _status);
+#ifdef JB_DEBUG
+    // Decoded view so we can SEE the live mapping. The wire letters are misleading
+    // (SERIAL_PROTOCOL.md §2a) — labels below show the REAL meaning. S is hex.
+    LT_I("  ES: S=0x%02X->%s | A(amps)=%d H(pilotV)=%d P(pilotduty)=%d F(offlim)=%d L=%d T(TPecho)=%d",
+         _status.state, lite_evse_state_name(juicebox_map_state(_status.state)),
+         _status.amps, _status.h, _status.power, _status.offline_limit, _status.line, _status.temp);
+#endif
+  }
   else if (!strcmp(f.type, "HW")) { copy_bounded(_hw, sizeof(_hw), f.payload, f.len); }
   else if (!strcmp(f.type, "FW")) { copy_bounded(_fw, sizeof(_fw), f.payload, f.len); }
   else if (!strcmp(f.type, "PV")) { copy_bounded(_pv, sizeof(_pv), f.payload, f.len); }
@@ -79,7 +104,13 @@ void JuiceBoxBackend::sendKeepalive() {
   char buf[32];
   int amps = _enabled ? _chargeLimit : 6; // Disabled => 6 A floor (see setState TODO)
   size_t n = juicebox_build_amps_set(amps, buf, sizeof(buf));
-  if (n) _port.write((const uint8_t *)buf, n);
+  if (n) {
+    _port.write((const uint8_t *)buf, n);
+#ifdef JB_DEBUG
+    char safe[32]; jb_log_safe(safe, sizeof(safe), buf);
+    LT_I("JBTX: %s", safe);   // what we send the Atmel (e.g. #SL002:06)
+#endif
+  }
 }
 
 void JuiceBoxBackend::addStatusFields(JsonDocument &doc) const {
