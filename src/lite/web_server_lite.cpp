@@ -2,43 +2,41 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-// IMPORTANT include order: pull in all the C++ / EVSE-core / StreamSpy headers
-// FIRST, then mongoose.h LAST. mongoose.h -> platform_custom.h forces
+// IMPORTANT include order: pull in all the C++ / ArduinoJson headers FIRST,
+// then mongoose.h LAST. mongoose.h -> platform_custom.h forces
 // LWIP_COMPAT_SOCKETS=1, which makes lwIP define function-like macros named
 // bind/read/write/send/recv. Those clobber std::bind and the Print/Stream
 // read()/write() method declarations if any C++ header is parsed afterwards.
 // Including them before mongoose keeps the lwIP compat macros scoped to the
 // mongoose code that actually wants the bare socket names.
-#include "web_server_lite.h"   // -> evse_man.h (RapiSender/StreamSpy/MicroTasks/<functional>)
+#include "lite_evse_backend.h"  // ArduinoJson before mongoose — see above
+#include "web_server_lite.h"
 #include "espal_lite.h"
-#include "evse_man.h"
 
 #include "mongoose.h"
 
 // Mongoose manager kept static to this TU.
 static struct mg_mgr s_mgr;
 
-// Live EvseManager handle stashed at begin() (the handler is a C-style callback
+// Live LiteEvseBackend handle stashed at begin() (the handler is a C-style callback
 // and cannot capture, so a static pointer is how it reaches device state).
-static EvseManager *s_evse = NULL;
+static LiteEvseBackend *s_backend = NULL;
 
-// Build the /status JSON from the live EvseManager. Matches the
-// StaticJsonDocument + serializeJson idiom used elsewhere in src/lite/.
+// Build the /status JSON from the live backend.
 static void build_status_json(String &out)
 {
   StaticJsonDocument<256> doc;
-
-  if (s_evse) {
-    doc["state"] = s_evse->getEvseState();
-    doc["amp"] = s_evse->getAmps();
-    doc["voltage"] = s_evse->getVoltage();
-    doc["pilot"] = s_evse->getPilotState();
-    doc["vehicle"] = s_evse->isVehicleConnected() ? 1 : 0;
+  if (s_backend) {
+    doc["state"]  = (int)s_backend->getState();
+    doc["amp"]    = s_backend->getAmps();
+    doc["power"]  = s_backend->getPower();
+    doc["temp"]   = s_backend->getTemp();
+    doc["fault"]  = s_backend->getFault();
+    doc["online"] = s_backend->isOnline() ? 1 : 0;
+    s_backend->addStatusFields(doc);
   }
-
   doc["free_heap"] = ESPAL.getFreeHeap();
-  doc["uptime"] = (uint32_t)(millis() / 1000);
-
+  doc["uptime"]    = (uint32_t)(millis() / 1000);
   serializeJson(doc, out);
 }
 
@@ -71,12 +69,12 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   nc->flags |= MG_F_SEND_AND_CLOSE;
 }
 
-void web_server_lite_begin(EvseManager &evse)
+void web_server_lite_begin(LiteEvseBackend &backend)
 {
-  s_evse = &evse;
+  s_backend = &backend;
   mg_mgr_init(&s_mgr, NULL);
   // mg_bind takes (mgr, addr, handler, user_data) when MG_ENABLE_CALLBACK_USERDATA=1.
-  // No Serial.print on failure — Serial is the RAPI line this slice.
+  // No Serial.print on failure — Serial is the JuiceBox $-protocol line this slice.
   struct mg_connection *c = mg_bind(&s_mgr, "80", ev_handler, NULL);
   if (c) {
     mg_set_protocol_http_websocket(c);
