@@ -1,6 +1,6 @@
 #pragma once
 #ifdef OPENEVSE_LITE
-class LiteEvseBackend;
-void web_server_lite_begin(LiteEvseBackend &backend);
+class LiteEvseManager;
+void web_server_lite_begin(LiteEvseManager &mgr);
 void web_server_lite_loop();
 #endif

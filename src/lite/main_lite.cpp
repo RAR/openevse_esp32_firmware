@@ -9,6 +9,8 @@
 #include "web_server_lite.h"
 #include "lite_evse_backend.h"
 #include "lite_config_store.h"
+#include "lite_evse_manager.h"
+#include "manual.h"
 
 #if defined(LITE_EVSE_BACKEND_JUICEBOX)
 #include "juicebox_backend.h"
@@ -16,6 +18,11 @@ static JuiceBoxBackend s_backend(Serial);   // USART0 LOC1 (PE7=TX/PE6=RX) @ 960
 #else
 #error "No lite EVSE backend selected (define LITE_EVSE_BACKEND_*)"
 #endif
+
+// Control seam: the manager owns the apply path; manual is the lifted canary
+// claim client (referenced extern from web_server_lite.cpp for /override + status).
+static LiteEvseManager s_manager(s_backend);
+ManualOverride manual(s_manager);
 
 // WiFi creds: real values arrive via PLATFORMIO_BUILD_FLAGS (-D LITE_WIFI_SSID=...).
 // When unset, fall back to the placeholder *_DEFAULT macros from platformio.ini.
@@ -50,7 +57,7 @@ void setup()
 
   s_backend.begin();
   lite_config_begin();              // mount FlashDB KVDB (kvs partition) before config load
-  web_server_lite_begin(s_backend); // loads config -> clamps -> applies charge current
+  web_server_lite_begin(s_manager); // loads config -> clamps -> seeds manager target
 
   // Now that Serial + the backend parser are up, give the Atmel a clean, synchronized
   // restart via its RESET line (PF11, active-low) so we capture its full boot burst —

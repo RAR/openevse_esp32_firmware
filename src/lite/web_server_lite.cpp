@@ -10,6 +10,8 @@
 // Including them before mongoose keeps the lwIP compat macros scoped to the
 // mongoose code that actually wants the bare socket names.
 #include "lite_evse_backend.h"  // ArduinoJson before mongoose — see above
+#include "lite_evse_manager.h"
+#include "manual.h"
 #include "web_server_lite.h"
 #include "espal_lite.h"
 #include "lite_config_store.h"
@@ -17,12 +19,15 @@
 
 #include "mongoose.h"
 
+// Manual override is defined in main_lite.cpp; reached here for /override + status.
+extern ManualOverride manual;
+
 // Mongoose manager kept static to this TU.
 static struct mg_mgr s_mgr;
 
-// Live LiteEvseBackend handle stashed at begin() (the handler is a C-style callback
+// Live LiteEvseManager handle stashed at begin() (the handler is a C-style callback
 // and cannot capture, so a static pointer is how it reaches device state).
-static LiteEvseBackend *s_backend = NULL;
+static LiteEvseManager *s_mgr_ctrl = NULL;
 
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
@@ -32,16 +37,16 @@ static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest Jui
 static void build_status_json(String &out)
 {
   StaticJsonDocument<512> doc;
-  if (s_backend) {
-    doc["state"]  = (int)s_backend->getState();
-    doc["amp"]    = s_backend->getAmps();
-    doc["power"]  = s_backend->getPower();
-    doc["temp"]   = s_backend->getTemp();
-    doc["fault"]  = s_backend->getFault();
-    doc["online"] = s_backend->isOnline() ? 1 : 0;
-    s_backend->addStatusFields(doc);
-    doc["max_current_soft"] = s_cfg.max_current_soft;
-    doc["max_current_hard"] = s_cfg.max_current_hard;
+  if (s_mgr_ctrl) {
+    doc["state"]  = s_mgr_ctrl->getEvseState();
+    doc["amp"]    = s_mgr_ctrl->getAmps();
+    doc["temp"]   = s_mgr_ctrl->getTemperature();
+    doc["charging"] = s_mgr_ctrl->isCharging() ? 1 : 0;
+    s_mgr_ctrl->addStatusFields(doc);
+    doc["max_current_soft"] = (uint32_t)s_mgr_ctrl->getChargeCurrent();
+    doc["max_current_hard"] = s_mgr_ctrl->getMaxHardwareCurrent();
+    doc["claims"] = (uint32_t)s_mgr_ctrl->activeClaimCount();
+    doc["manual"] = manual.isActive() ? 1 : 0;
   }
   doc["free_heap"] = ESPAL.getFreeHeap();
   doc["uptime"]    = (uint32_t)(millis() / 1000);
@@ -86,8 +91,9 @@ static void handle_config(struct mg_connection *nc, struct http_message *hm)
     bool saved = lite_config_save_evse(cfg);
     // Apply + cache even if persistence failed (best effort).
     s_cfg = cfg;
-    if (s_backend) {
-      s_backend->setChargeCurrent(cfg.max_current_soft);
+    if (s_mgr_ctrl) {
+      s_mgr_ctrl->setTargetMaxCurrent((uint32_t)cfg.max_current_hard);
+      s_mgr_ctrl->setTargetChargeCurrent((uint32_t)cfg.max_current_soft);
     }
     // 503 signals "applied but not persisted" so the caller knows it won't survive reboot.
     if (!saved) {
@@ -120,6 +126,25 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
     mg_printf(nc, "%s", body.c_str());
   } else if (mg_vcmp(&hm->uri, "/config") == 0) {
     handle_config(nc, hm);
+  } else if (mg_vcmp(&hm->uri, "/override") == 0) {
+    char val[12];
+    if (mg_get_http_var(&hm->query_string, "state", val, sizeof(val)) > 0) {
+      if (strcmp(val, "active") == 0) {
+        EvseProperties p(EvseState::Active);  manual.claim(p);
+      } else if (strcmp(val, "disabled") == 0) {
+        EvseProperties p(EvseState::Disabled); manual.claim(p);
+      } else if (strcmp(val, "release") == 0) {
+        manual.release();
+      }
+    }
+    String body;
+    StaticJsonDocument<96> doc;
+    doc["manual"] = manual.isActive() ? 1 : 0;
+    doc["state"]  = (int)(s_mgr_ctrl ? (int)s_mgr_ctrl->getState() : 0);
+    doc["charge_current"] = (uint32_t)(s_mgr_ctrl ? s_mgr_ctrl->getChargeCurrent() : 0);
+    serializeJson(doc, body);
+    mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
+    mg_printf(nc, "%s", body.c_str());
   } else if (mg_vcmp(&hm->uri, "/") == 0) {
     const char *body = "openevse-lite";
     mg_send_head(nc, 200, strlen(body), "Content-Type: text/plain");
@@ -133,17 +158,18 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   nc->flags |= MG_F_SEND_AND_CLOSE;
 }
 
-void web_server_lite_begin(LiteEvseBackend &backend)
+void web_server_lite_begin(LiteEvseManager &mgr)
 {
-  s_backend = &backend;
+  s_mgr_ctrl = &mgr;
 
-  // Load persisted config (or keep the 32/32 defaults), clamp, apply to the backend.
+  // Load persisted config (or keep the 32/32 defaults), clamp, seed the manager target.
   if (!lite_config_load_evse(s_cfg)) {
     s_cfg = (LiteEvseConfig){ 32, 32 };
   }
   s_cfg.max_current_hard = lite_clamp_service_max(s_cfg.max_current_hard);
   s_cfg.max_current_soft = lite_clamp_charge_current(s_cfg.max_current_soft, s_cfg.max_current_hard);
-  backend.setChargeCurrent(s_cfg.max_current_soft);
+  mgr.setTargetMaxCurrent((uint32_t)s_cfg.max_current_hard);
+  mgr.setTargetChargeCurrent((uint32_t)s_cfg.max_current_soft);
 
   mg_mgr_init(&s_mgr, NULL);
   // mg_bind takes (mgr, addr, handler, user_data) when MG_ENABLE_CALLBACK_USERDATA=1.
