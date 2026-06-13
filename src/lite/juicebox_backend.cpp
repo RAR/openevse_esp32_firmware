@@ -102,13 +102,17 @@ void JuiceBoxBackend::sendKeepalive() {
   // Advertise the deliberate safe limit, not the MCU's reported max. juicebox_build_amps_set
   // clamps to [0,79]; the MCU further clamps <6 up to the 6 A J1772 floor.
   char buf[32];
-  int amps = _enabled ? _chargeLimit : 6; // Disabled => 6 A floor (see setState TODO)
+  // Disabled => command 0 A. Per RE (SERIAL_PROTOCOL.md §4) an active limit < 6 A clears
+  // the MCU's charge-enable gate (the real J1772 stop) — so we MUST keep sending (at 0),
+  // not go silent: silence drops the MCU to offline mode where it keeps charging at the
+  // persisted offline limit. Enabled => advertise the configured limit.
+  int amps = _enabled ? _chargeLimit : 0;
   size_t n = juicebox_build_amps_set(amps, buf, sizeof(buf));
   if (n) {
     _port.write((const uint8_t *)buf, n);
 #ifdef JB_DEBUG
     char safe[32]; jb_log_safe(safe, sizeof(safe), buf);
-    LT_I("JBTX: %s", safe);   // what we send the Atmel (e.g. #SL002:06)
+    LT_I("JBTX: %s", safe);   // what we send the Atmel (e.g. #AL002:24)
 #endif
   }
 }

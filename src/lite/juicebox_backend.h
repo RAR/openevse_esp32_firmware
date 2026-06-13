@@ -25,10 +25,11 @@ public:
   void setChargeCurrent(int amps) override { _chargeLimit = amps; }
   // Distinct from getAmps() (the Atmel's reported max/rating in $ES field A).
   int  getChargeCurrent() const override { return _chargeLimit; }
-  // TODO(fresh-unit capture): the JuiceBox $-protocol has NO host stop command
-  // (RE-confirmed). Disabled maps to the 6 A floor (cannot truly open the
-  // contactor). When the real stop command is captured from a fresh unit, wire
-  // it HERE — this is the only place to change.
+  // Disabled => stop. The stop command IS known (RE-confirmed): commanding the active
+  // limit < 6 A (we send 0 via the keepalive) clears the MCU's charge-enable gate so the
+  // J1772 pilot reverts to its non-charging state and the EV stops. _enabled gates the
+  // keepalive's advertised amps (see sendKeepalive). HW-validation of the stop pending a
+  // complete unit (the bench unit hard-faults on GFI and won't charge).
   void setState(EvseState s) override { _enabled = (s != EvseState::Disabled); }
   bool isCharging() const override { return juicebox_map_state(_status.state) == LiteEvseState::Charging; }
   int  getMinCurrent() const override { return 6; }
