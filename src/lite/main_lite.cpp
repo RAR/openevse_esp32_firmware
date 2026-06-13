@@ -24,7 +24,10 @@ static JuiceBoxBackend s_backend(Serial);   // USART0 LOC1 (PE7=TX/PE6=RX) @ 960
 
 void setup()
 {
-  Serial.begin(9600);             // the JuiceBox $-protocol line (no debug prints here)
+  // JuiceBox $-protocol line @ 115200 8N1 — HW-confirmed 2026-06-13 (clean $ES/$MD/$WR
+  // frame decode at this rate; the earlier 9600 was a stale RAPI-era assumption). No
+  // debug prints here: LibreTiny LT logging is LT_LEVEL_NONE so it can't corrupt framing.
+  Serial.begin(115200);
   ESPAL.begin();
 
   WiFi.begin(LITE_WIFI_SSID, LITE_WIFI_PASS);
