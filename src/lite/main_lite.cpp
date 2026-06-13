@@ -77,5 +77,6 @@ void loop()
 {
   web_server_lite_loop();
   s_backend.loop();
+  s_manager.loop();   // tick session-energy accumulator from live backend power
 }
 #endif
