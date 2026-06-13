@@ -54,3 +54,37 @@ TEST_CASE("an over-long runaway line does not overflow") {
   for (char *c = big; *c; ++c) p.feed((uint8_t)*c, f);
   CHECK(true);
 }
+
+TEST_CASE("decodes all $ES fields including the 3-digit power field") {
+  JuiceBoxStatus s;
+  REQUIRE(juicebox_parse_es("S02,L01,T31,H00,A24,P240,F00", 27, s));
+  CHECK(s.valid);
+  CHECK(s.state == 2);
+  CHECK(s.line  == 1);
+  CHECK(s.temp  == 31);
+  CHECK(s.amps  == 24);
+  CHECK(s.power == 240);
+  CHECK(s.fault == 0);
+}
+
+TEST_CASE("$ES decode tolerates a missing trailing field") {
+  JuiceBoxStatus s;
+  REQUIRE(juicebox_parse_es("S00,A00", 7, s));
+  CHECK(s.state == 0);
+  CHECK(s.amps  == 0);
+}
+
+TEST_CASE("$ES decode rejects empty payload") {
+  JuiceBoxStatus s;
+  CHECK_FALSE(juicebox_parse_es("", 0, s));
+}
+
+TEST_CASE("maps JB state codes to canonical states (Task 1 LIKELY map, HW-verify)") {
+  CHECK(juicebox_map_state(0) == LiteEvseState::NotConnected);
+  CHECK(juicebox_map_state(1) == LiteEvseState::Connected);
+  CHECK(juicebox_map_state(2) == LiteEvseState::Charging);
+  CHECK(juicebox_map_state(3) == LiteEvseState::Charging);
+  CHECK(juicebox_map_state(5) == LiteEvseState::Error);
+  CHECK(juicebox_map_state(4)  == LiteEvseState::Unknown);
+  CHECK(juicebox_map_state(99) == LiteEvseState::Unknown);
+}

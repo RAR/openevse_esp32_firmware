@@ -42,6 +42,53 @@ bool JuiceBoxParser::flush(JuiceBoxFrame &out) {
   return ok;
 }
 
+bool juicebox_parse_es(const char *payload, uint16_t len, JuiceBoxStatus &out) {
+  memset(&out, 0, sizeof(out));
+  if (!payload || len == 0) return false;
+
+  const char *p   = payload;
+  const char *end = payload + len;
+  int fields = 0;
+
+  while (p < end && *p) {
+    char f = *p++;                       // field letter
+    bool neg = false;
+    if (p < end && *p == '-') { neg = true; ++p; }
+    int v = 0; bool any = false;
+    while (p < end && *p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; any = true; }
+    if (!any) return false;              // letter with no number => malformed
+    if (neg) v = -v;
+
+    switch (f) {
+      case 'S': out.state = v; break;
+      case 'L': out.line  = v; break;
+      case 'T': out.temp  = v; break;
+      case 'H': out.h     = v; break;
+      case 'A': out.amps  = v; break;
+      case 'P': out.power = v; break;
+      case 'F': out.fault = v; break;
+      default: break;                    // ignore unknown field letters
+    }
+    ++fields;
+    if (p < end && *p == ',') ++p;       // step over separator
+  }
+  out.valid = fields > 0;
+  return out.valid;
+}
+
+LiteEvseState juicebox_map_state(int raw) {
+  // Code values are LIKELY per the Task 1 RE note (docs/superpowers/notes/
+  // 2026-06-13-juicebox-protocol-re.md) and must be confirmed on hardware.
+  switch (raw) {
+    case 0:  return LiteEvseState::NotConnected;  // idle / not connected
+    case 1:  return LiteEvseState::Connected;     // ready
+    case 2:                                       // charging
+    case 3:  return LiteEvseState::Charging;
+    case 5:  return LiteEvseState::Error;          // fault / GFI / lockout
+    default: return LiteEvseState::Unknown;        // incl. 4 and >= 6
+  }
+}
+
 bool JuiceBoxParser::feed(uint8_t b, JuiceBoxFrame &out) {
   if (b == '$') {
     bool ready = flush(out);   // close any in-progress frame
