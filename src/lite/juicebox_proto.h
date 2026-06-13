@@ -3,8 +3,11 @@
 #include <stddef.h>
 #include "lite_evse_state.h"
 
-inline constexpr size_t JB_TYPE_LEN    = 2;
-inline constexpr size_t JB_MAX_PAYLOAD = 80;
+// static constexpr (not inline constexpr): the device toolchain builds at gnu++14,
+// where `inline` variables warn. constexpr at namespace scope already has internal
+// linkage, so each TU gets its own copy — no ODR clash.
+static constexpr size_t JB_TYPE_LEN    = 2;
+static constexpr size_t JB_MAX_PAYLOAD = 80;
 
 // One decoded protocol frame: 2-char type + NUL-terminated payload.
 struct JuiceBoxFrame {
