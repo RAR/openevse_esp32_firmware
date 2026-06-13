@@ -148,15 +148,26 @@ int lite_clamp_charge_current(int soft, int hard);    // clamp to [JB_MIN_CURREN
 - Pure integer functions, no Arduino deps → unit-tested in the native doctest env like
   `juicebox_proto`. Add `+<lite/lite_charge_policy.cpp>` to the native env `build_src_filter`.
 
-### 5. Web endpoint
+### 5. Web endpoint (GET-set + connection reaper — revised after HW validation)
 - **Files:** `src/lite/web_server_lite.cpp`.
-- `GET /config` → `{"max_current_soft":N,"max_current_hard":M}` (from the RAM cache).
-- `POST /config?max_current_soft=N&max_current_hard=M` (either or both via query params, so it is a
-  one-line `curl -X POST`). Handler: start from the cached config, overwrite present params (parse
-  via `mg_get_http_var(&hm->query_string, …)`), apply `lite_clamp_service_max` then
+- **`/config` is method-agnostic:** query params present (on **GET or POST**) ⇒ SET; absent ⇒ read
+  current. `GET /config?max_current_soft=N&max_current_hard=M` (either or both) is the blessed path:
+  no request body is ever required, so `curl 'http://ip/config?max_current_soft=20'`, evcc's
+  generic-charger GET URLs, and the HA app all work. Handler: start from the cached config, overwrite
+  present params (`mg_get_http_var(&hm->query_string, …)`), apply `lite_clamp_service_max` then
   `lite_clamp_charge_current`, persist via `lite_config_save_evse`, apply via
-  `backend.setChargeCurrent`, update the RAM cache, and respond with the **clamped** result echoed as
-  JSON (so the caller sees what actually took effect). Method dispatch via `mg_vcmp(&hm->method, …)`.
+  `backend.setChargeCurrent`, update the RAM cache, respond with the **clamped** result as JSON (503
+  if persistence failed but the value was applied). No-params ⇒ returns current (200).
+- **Why GET-set (not POST-only):** Mongoose 6.18 will not fire `MG_EV_HTTP_REQUEST` for a POST that
+  carries no `Content-Length` (e.g. a bodyless `curl -X POST`) — it waits for a body that never
+  arrives, wedging the connection. A flood of these starves the connection pool (the server stops
+  answering even GETs). GET has no body expectation, so it always dispatches. Real POST clients that
+  send `Content-Length` (browsers/`fetch`, HA `rest_command`) still work; a bodyless POST is the only
+  unsupported corner (it applies ~10s late with no response when the reaper closes it — see below —
+  which is safe/clamped but undocumented usage; use GET).
+- **Connection reaper:** `web_server_lite_loop()` closes any non-listening connection idle >10 s
+  (`mg_time() - c->last_io_time`), so an incomplete request can never exhaust the pool. This is the
+  robustness half of the fix.
 - Add `max_current_soft` / `max_current_hard` to `/status` (from the RAM cache) for visibility.
 
 ### 6. Boot flow (in `web_server_lite_begin`)
@@ -184,7 +195,7 @@ int lite_clamp_charge_current(int soft, int hard);    // clamp to [JB_MIN_CURREN
 
 ## Error handling
 - Missing/unparseable query param → ignore that field (partial update allowed); if neither present →
-  400.
+  return the current config (200), i.e. a plain read.
 - Out-of-range values → clamped, not rejected (response shows the clamped value).
 - `max_current_hard` key absent on load → defaults, not an error.
 - KVDB save failure → 503 + keep the in-RAM applied value (best effort).
