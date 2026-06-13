@@ -21,7 +21,7 @@ public:
   }
   uint32_t nowLocal(uint32_t nowMs) const {
     if (!_valid) return 0;
-    return (uint32_t)((int32_t)nowUtc(nowMs) + _tzOffsetMin * 60);
+    return nowUtc(nowMs) + static_cast<uint32_t>(static_cast<int32_t>(_tzOffsetMin) * 60);
   }
   void setTzOffsetMinutes(int minutes) { _tzOffsetMin = minutes; }
   int  tzOffsetMinutes() const { return _tzOffsetMin; }

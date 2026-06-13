@@ -47,6 +47,10 @@ TEST_CASE("civil_from_secs decodes known dates") {
   CHECK(y == 2025); CHECK(m == 2u); CHECK(d == 1u);
   lite_civil_from_secs(1767225600u, y, m, d);  // 2026-01-01
   CHECK(y == 2026); CHECK(m == 1u); CHECK(d == 1u);
+  lite_civil_from_secs(1709164800u, y, m, d);  // 2024-02-29 (leap day)
+  CHECK(y == 2024); CHECK(m == 2u); CHECK(d == 29u);
+  lite_civil_from_secs(1735689599u, y, m, d);  // 2024-12-31 23:59:59 -> civil 2024-12-31
+  CHECK(y == 2024); CHECK(m == 12u); CHECK(d == 31u);
 }
 
 TEST_CASE("iso8601 formats UTC epoch") {
@@ -55,4 +59,6 @@ TEST_CASE("iso8601 formats UTC epoch") {
   CHECK(strcmp(buf, "2025-01-01T00:00:00Z") == 0);
   lite_clock_iso8601(1735689600u + 3661u, buf, sizeof(buf)); // +01:01:01
   CHECK(strcmp(buf, "2025-01-01T01:01:01Z") == 0);
+  lite_clock_iso8601(1735775999u, buf, sizeof(buf));  // 2025-01-01 23:59:59
+  CHECK(strcmp(buf, "2025-01-01T23:59:59Z") == 0);
 }
