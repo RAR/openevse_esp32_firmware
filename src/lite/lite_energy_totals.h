@@ -10,6 +10,9 @@ struct LiteEnergyTotals {
   int32_t  day_id, week_id, month_id, year_id;  // local-calendar period ids; -1 = unset
   uint32_t switches;                            // completed-session count
 };
+// Persisted verbatim to flash — pin the layout so a field change can't silently
+// corrupt stored totals (bump the expected size deliberately if you change fields).
+static_assert(sizeof(LiteEnergyTotals) == 64, "LiteEnergyTotals layout changed — migration needed");
 
 void energy_totals_init(LiteEnergyTotals &t);   // zero + ids = -1
 

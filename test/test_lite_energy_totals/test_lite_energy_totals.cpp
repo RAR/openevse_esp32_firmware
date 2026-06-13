@@ -34,6 +34,16 @@ TEST_CASE("crossing a day boundary resets the day bucket only") {
   CHECK(t.switches == 2u);
 }
 
+TEST_CASE("crossing a week boundary (same month) resets day+week, not month/year") {
+  LiteEnergyTotals t; energy_totals_init(t);
+  energy_totals_add(t, 1000u, 1735689600u, true);              // 2025-01-01 (Wed)
+  energy_totals_add(t, 300u,  1735689600u + 7u * 86400u, true); // 2025-01-08 (Wed) next week, same month
+  CHECK(t.day_wh   == 300u);   // new day -> reset
+  CHECK(t.week_wh  == 300u);   // new week -> reset
+  CHECK(t.month_wh == 1300u);  // same month -> accumulates
+  CHECK(t.year_wh  == 1300u);  // same year -> accumulates
+}
+
 TEST_CASE("crossing month and year boundaries resets those buckets") {
   LiteEnergyTotals t; energy_totals_init(t);
   energy_totals_add(t, 1000u, JAN01, true);
