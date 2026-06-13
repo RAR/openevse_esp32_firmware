@@ -131,10 +131,13 @@ size_t juicebox_build_frame(const char *type, const char *payload, char *buf, si
   return (n > 0 && (size_t)n < buflen) ? (size_t)n : 0;
 }
 
-// UNCONFIRMED host->MCU amps-set command type. RE (Task 1) shows host commands are
-// 'S'-class and the amps command "contains L"; the exact bytes need a live UART
-// capture (the ATmega is held in reset). Change this ONE constant once confirmed.
-static const char JB_AMPS_CMD_TYPE[] = "SL";
+// Host->MCU set-active-limit command. CONFIRMED "AL" by full disasm of the running
+// ATmega image (SERIAL_PROTOCOL.md): dispatch arm @0x14e0 routes "AL" -> set-value
+// handler (writes the active current limit RAM 0x519, the J1772 charge gate). There is
+// NO 'S'-prefixed command anywhere in the firmware — the earlier "SL" was a wrong guess
+// and was silently dropped at dispatch (it reset the comm watchdog but set nothing).
+// "OL" is the offline-limit sibling (first char selects the target). Sent unsolicited.
+static const char JB_AMPS_CMD_TYPE[] = "AL";
 
 size_t juicebox_build_amps_set(int amps, char *buf, size_t buflen) {
   if (amps < 0)  amps = 0;
