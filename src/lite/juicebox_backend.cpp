@@ -52,6 +52,12 @@ static void copy_bounded(char *dst, size_t cap, const char *src, uint16_t len) {
 }
 
 void JuiceBoxBackend::handleFrame(const JuiceBoxFrame &f) {
+#ifdef JB_DEBUG
+  // Bench-debug echo of every received Atmel frame to VCOM (raw payload incl. any
+  // foreign :tag:). Protocol-safe: the Atmel ignores non-$ log noise. Built only in
+  // [env:openevse_lite_debug]; compiled out of the production env.
+  LT_I("JBRX [%s] len=%u: %s", f.type, (unsigned)f.len, f.payload);
+#endif
   if      (!strcmp(f.type, "ES")) { juicebox_parse_es(f.payload, f.len, _status); }
   else if (!strcmp(f.type, "HW")) { copy_bounded(_hw, sizeof(_hw), f.payload, f.len); }
   else if (!strcmp(f.type, "FW")) { copy_bounded(_fw, sizeof(_fw), f.payload, f.len); }
