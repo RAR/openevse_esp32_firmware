@@ -57,8 +57,13 @@ static void config_json(String &out)
   serializeJson(doc, out);
 }
 
-// POST /config?max_current_soft=N&max_current_hard=M (either or both).
-static void handle_config_post(struct mg_connection *nc, struct http_message *hm)
+// GET or POST /config[?max_current_soft=N&max_current_hard=M].
+// Params present (on EITHER method) => SET (clamp -> persist -> apply); absent
+// => read current. Accepting the set on GET means no request body is ever
+// required, so bodyless clients work: `curl 'http://ip/config?max_current_soft=20'`,
+// evcc's generic-charger GET URLs, and the HA app all hit it without a body
+// (a no-Content-Length POST otherwise wedges Mongoose waiting for a body).
+static void handle_config(struct mg_connection *nc, struct http_message *hm)
 {
   char val[8];
   bool any = false;
@@ -73,28 +78,27 @@ static void handle_config_post(struct mg_connection *nc, struct http_message *hm
     any = true;
   }
 
-  if (!any) {
-    const char *body = "no params";
-    mg_send_head(nc, 400, strlen(body), "Content-Type: text/plain");
-    mg_printf(nc, "%s", body);
-    return;
+  int status = 200;
+  if (any) {
+    cfg.max_current_hard = lite_clamp_service_max(cfg.max_current_hard);
+    cfg.max_current_soft = lite_clamp_charge_current(cfg.max_current_soft, cfg.max_current_hard);
+
+    bool saved = lite_config_save_evse(cfg);
+    // Apply + cache even if persistence failed (best effort).
+    s_cfg = cfg;
+    if (s_backend) {
+      s_backend->setChargeCurrent(cfg.max_current_soft);
+    }
+    // 503 signals "applied but not persisted" so the caller knows it won't survive reboot.
+    if (!saved) {
+      status = 503;
+    }
   }
 
-  cfg.max_current_hard = lite_clamp_service_max(cfg.max_current_hard);
-  cfg.max_current_soft = lite_clamp_charge_current(cfg.max_current_soft, cfg.max_current_hard);
-
-  bool saved = lite_config_save_evse(cfg);
-
-  // Apply + cache even if persistence failed (best effort).
-  s_cfg = cfg;
-  if (s_backend) {
-    s_backend->setChargeCurrent(cfg.max_current_soft);
-  }
-
+  // Always echo the (now-current) clamped config so the caller sees what took effect.
   String body;
   config_json(body);
-  // 503 signals "applied but not persisted" so the caller knows it won't survive reboot.
-  mg_send_head(nc, saved ? 200 : 503, body.length(), "Content-Type: application/json");
+  mg_send_head(nc, status, body.length(), "Content-Type: application/json");
   mg_printf(nc, "%s", body.c_str());
 }
 
@@ -115,14 +119,7 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
     mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
     mg_printf(nc, "%s", body.c_str());
   } else if (mg_vcmp(&hm->uri, "/config") == 0) {
-    if (mg_vcmp(&hm->method, "POST") == 0) {
-      handle_config_post(nc, hm);
-    } else {
-      String body;
-      config_json(body);
-      mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
-      mg_printf(nc, "%s", body.c_str());
-    }
+    handle_config(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/") == 0) {
     const char *body = "openevse-lite";
     mg_send_head(nc, 200, strlen(body), "Content-Type: text/plain");
@@ -157,8 +154,26 @@ void web_server_lite_begin(LiteEvseBackend &backend)
   }
 }
 
+// Reap connections wedged open by an incomplete request — e.g. a POST with no
+// Content-Length, where Mongoose waits forever for a body that never arrives.
+// Left unchecked these accumulate and exhaust the connection pool (symptom: the
+// server stops answering even GETs). A normal request/response on this server
+// lasts milliseconds, so any non-listening connection idle past this window is
+// stuck. mg_time() is wall-clock seconds; last_io_time updates on each socket IO.
+static const double LITE_CONN_IDLE_SECS = 10.0;
+
 void web_server_lite_loop()
 {
   mg_mgr_poll(&s_mgr, 0);
+
+  double now = mg_time();
+  struct mg_connection *c, *tmp;
+  for (c = mg_next(&s_mgr, NULL); c != NULL; c = tmp) {
+    tmp = mg_next(&s_mgr, c); // fetch next before a possible close invalidates c
+    if (!(c->flags & MG_F_LISTENING) &&
+        (now - (double)c->last_io_time) > LITE_CONN_IDLE_SECS) {
+      c->flags |= MG_F_CLOSE_IMMEDIATELY;
+    }
+  }
 }
 #endif
