@@ -49,6 +49,19 @@ void setup()
 
   s_backend.begin();
   web_server_lite_begin(s_backend);
+
+  // Now that Serial + the backend parser are up, give the Atmel a clean, synchronized
+  // restart via its RESET line (PF11, active-low) so we capture its full boot burst —
+  // the $HW/$FW/$PV identity and the $WC handshake nonce — from frame zero. (Held high
+  // since the top of setup(), the Atmel already booted once before we were listening,
+  // so its identity went unseen; this re-announces it with loop() about to run.)
+  // Unconditional on every host boot (user-approved 2026-06-13): the WGM160P only
+  // reboots on power-cycle/OTA/crash, so a clean comms re-sync is worth interrupting a
+  // charge in those rare cases — the Atmel re-establishes its own safe state on reset.
+  GPIO_PinOutClear(gpioPortF, 11);  // assert RESET — hold the Atmel
+  delay(50);                        // well past the AVR min reset pulse width
+  GPIO_PinOutSet(gpioPortF, 11);    // release RESET — Atmel boots fresh
+  delay(100);                       // brief settle; loop() catches the boot frames
 }
 
 void loop()
