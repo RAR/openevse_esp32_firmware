@@ -121,16 +121,17 @@ int lite_clamp_charge_current(int soft, int hard);    // clamp to [JB_MIN_CURREN
 
 ### 6. Boot flow
 - **Files:** `src/lite/main_lite.cpp`.
-- After `lite_config_begin()` and before/at `s_backend.begin()`: `lite_config_load_evse(cfg)`; if
-  absent, `cfg = { max_current_soft: 6, max_current_hard: 6 }` (safe default — see Defaults); clamp;
+- During `setup()`, after `s_backend.begin()`: `lite_config_load_evse(cfg)`; if absent,
+  `cfg = { max_current_soft: 32, max_current_hard: 32 }` (default — see Defaults); clamp;
   `s_backend.setChargeCurrent(cfg.max_current_soft)`.
 
 ## Defaults & safety
-- **Default `max_current_hard` = 6 A** (not the JB40 nameplate). An unconfigured/factory unit advertises
-  only the 6 A floor; the installer must explicitly raise the service-max to the circuit rating
-  before any higher current can be commanded. This matches the safety stance of the keepalive fix
-  (`dffbe94`) — never command above a deliberate floor by default. *(Open for review: set to 40 A
-  nameplate instead if you prefer convenience over safe-by-default.)*
+- **Default `max_current_hard` = 32 A** and **`max_current_soft` = 32 A**. 32 A is the smallest
+  JuiceBox model ever sold, so it's the safe out-of-box assumption for the hardware's rated current:
+  a factory/unconfigured unit charges at its rated 32 A; the installer lowers `max_current_hard` if
+  the circuit is smaller, or lowers `max_current_soft` to cap a session. (The earlier keepalive
+  concern, `dffbe94`, was advertising the Atmel's *reported max* of ~80 A — 32 A on a 32 A-rated unit
+  is the correct rating, not an over-command.)
 - `JB_ABS_MAX = 48 A` is a hard ceiling enforced even if config somehow holds a larger value.
 - The Atmel independently clamps `<6 → 6` and rejects `≥81`; our clamp is the host-side policy layer.
 - LittleFS mount failure → in-RAM defaults (6/6) + the unit still runs read + safe keepalive; the
