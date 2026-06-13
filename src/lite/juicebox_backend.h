@@ -12,14 +12,14 @@ public:
   void loop()  override;
 
   bool          isOnline() const override;
-  // A non-zero $ES F (fault) field takes precedence over the S state code.
-  LiteEvseState getState() const override {
-    return _status.fault != 0 ? LiteEvseState::Error : juicebox_map_state(_status.state);
-  }
+  // Faults come from the S state code (0x05), NOT the $ES F field — F is the
+  // offline-limit echo, not a fault flag (SERIAL_PROTOCOL.md §2a). The human-
+  // readable cause rides the $MD/$WR channel (exposed as `wr` in /status).
+  LiteEvseState getState() const override { return juicebox_map_state(_status.state); }
   int  getAmps()  const override { return _status.amps; }
   int  getPower() const override { return _status.power; }
   int  getTemp()  const override { return _status.temp; }
-  int  getFault() const override { return _status.fault; }
+  int  getFault() const override { return getState() == LiteEvseState::Error ? 1 : 0; }
   // Sets the keepalive's advertised charge current. The Atmel further clamps to
   // its 6 A floor / <81 A ceiling; host-side policy lives in lite_charge_policy.
   void setChargeCurrent(int amps) override { _chargeLimit = amps; }

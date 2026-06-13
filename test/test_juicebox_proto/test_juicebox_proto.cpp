@@ -61,10 +61,25 @@ TEST_CASE("decodes all $ES fields including the 3-digit power field") {
   CHECK(s.valid);
   CHECK(s.state == 2);
   CHECK(s.line  == 1);
-  CHECK(s.temp  == 31);
-  CHECK(s.amps  == 24);
+  CHECK(s.temp  == 31);          // T is decimal
+  CHECK(s.amps  == 24);          // A is decimal
   CHECK(s.power == 240);
-  CHECK(s.fault == 0);
+  CHECK(s.offline_limit == 0);   // F = offline-limit echo, not fault
+}
+
+TEST_CASE("$ES S field is parsed as HEX, other fields stay decimal") {
+  JuiceBoxStatus s;
+  // Charging state 0x31 must decode to 49 (not decimal 31), while the decimal
+  // fields beside it (A80, F80) stay 80 — proving per-field radix.
+  REQUIRE(juicebox_parse_es("S31,L00,T00,H40,A80,P000,F80", 28, s));
+  CHECK(s.state         == 0x31);  // == 49
+  CHECK(s.amps          == 80);
+  CHECK(s.offline_limit == 80);
+  CHECK(juicebox_map_state(s.state) == LiteEvseState::Charging);
+
+  // A hex-letter state (0x0A) round-trips too.
+  REQUIRE(juicebox_parse_es("S0A,A00", 7, s));
+  CHECK(s.state == 0x0A);          // == 10
 }
 
 TEST_CASE("$ES decode tolerates a missing trailing field") {
@@ -79,14 +94,19 @@ TEST_CASE("$ES decode rejects empty payload") {
   CHECK_FALSE(juicebox_parse_es("", 0, s));
 }
 
-TEST_CASE("maps JB state codes to canonical states (Task 1 LIKELY map, HW-verify)") {
-  CHECK(juicebox_map_state(0) == LiteEvseState::NotConnected);
-  CHECK(juicebox_map_state(1) == LiteEvseState::Connected);
-  CHECK(juicebox_map_state(2) == LiteEvseState::Charging);
-  CHECK(juicebox_map_state(3) == LiteEvseState::Charging);
-  CHECK(juicebox_map_state(5) == LiteEvseState::Error);
-  CHECK(juicebox_map_state(4)  == LiteEvseState::Unknown);
-  CHECK(juicebox_map_state(99) == LiteEvseState::Unknown);
+TEST_CASE("maps hex JB state codes to canonical states (SERIAL_PROTOCOL.md §2a)") {
+  // FIRM: charging + pre-charge => Charging; fault => Error.
+  CHECK(juicebox_map_state(JB_S_CHARGING)  == LiteEvseState::Charging);   // 0x31
+  CHECK(juicebox_map_state(JB_S_PRECHARGE) == LiteEvseState::Charging);   // 0x21
+  CHECK(juicebox_map_state(JB_S_FAULT)     == LiteEvseState::Error);      // 0x05
+  // Idle/poll codes => NotConnected (Connected needs the H field — follow-up).
+  CHECK(juicebox_map_state(JB_S_INIT)    == LiteEvseState::NotConnected); // 0x00
+  CHECK(juicebox_map_state(JB_S_READY)   == LiteEvseState::NotConnected); // 0x01
+  CHECK(juicebox_map_state(JB_S_STANDBY) == LiteEvseState::NotConnected); // 0x02
+  CHECK(juicebox_map_state(JB_S_IDLE)    == LiteEvseState::NotConnected); // 0x11
+  // Anything outside the 7 valid codes => Unknown.
+  CHECK(juicebox_map_state(0x04) == LiteEvseState::Unknown);
+  CHECK(juicebox_map_state(0x99) == LiteEvseState::Unknown);
 }
 
 TEST_CASE("build_frame emits $<type><3hex len>:<payload>") {

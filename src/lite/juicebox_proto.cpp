@@ -52,21 +52,33 @@ bool juicebox_parse_es(const char *payload, uint16_t len, JuiceBoxStatus &out) {
 
   while (p < end && *p) {
     char f = *p++;                       // field letter
+    // The "S" state field is HEX on the wire (e.g. "S31" => 0x31); every other
+    // field is decimal (SERIAL_PROTOCOL.md §2a). Parse with the right radix so a
+    // charging state like 0x31 doesn't decimal-decode to 31 and miss the map.
+    const int radix = (f == 'S') ? 16 : 10;
     bool neg = false;
-    if (p < end && *p == '-') { neg = true; ++p; }
+    if (p < end && *p == '-') { neg = true; ++p; }   // decimal fields only; S is unsigned hex
     int v = 0; bool any = false;
-    while (p < end && *p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; any = true; }
+    for (; p < end; ++p) {
+      int d;
+      if      (*p >= '0' && *p <= '9') d = *p - '0';
+      else if (*p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+      else if (*p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+      else break;
+      if (d >= radix) break;             // hex letter in a decimal field => not our digit
+      v = v * radix + d; any = true;
+    }
     if (!any) return false;              // letter with no number => malformed
     if (neg) v = -v;
 
     switch (f) {
-      case 'S': out.state = v; break;
-      case 'L': out.line  = v; break;
-      case 'T': out.temp  = v; break;
-      case 'H': out.h     = v; break;
-      case 'A': out.amps  = v; break;
-      case 'P': out.power = v; break;
-      case 'F': out.fault = v; break;
+      case 'S': out.state         = v; break;
+      case 'L': out.line          = v; break;
+      case 'T': out.temp          = v; break;
+      case 'H': out.h             = v; break;
+      case 'A': out.amps          = v; break;
+      case 'P': out.power         = v; break;
+      case 'F': out.offline_limit = v; break;
       default: break;                    // ignore unknown field letters
     }
     ++fields;
@@ -77,15 +89,19 @@ bool juicebox_parse_es(const char *payload, uint16_t len, JuiceBoxStatus &out) {
 }
 
 LiteEvseState juicebox_map_state(int raw) {
-  // Code values are LIKELY per the Task 1 RE note (docs/superpowers/notes/
-  // 2026-06-13-juicebox-protocol-re.md) and must be confirmed on hardware.
+  // Hex state codes per SERIAL_PROTOCOL.md §2a (static decode of this unit's FW).
+  // FIRM: 0x31 charging (contactor closed) + 0x21 pre-charge => Charging; 0x05 => fault.
+  // Idle/poll codes => NotConnected: S cannot distinguish "plugged, idle" from "unplugged"
+  // (the H pilot-voltage field does — promote to Connected in a follow-up).
   switch (raw) {
-    case 0:  return LiteEvseState::NotConnected;  // idle / not connected
-    case 1:  return LiteEvseState::Connected;     // ready
-    case 2:                                       // charging
-    case 3:  return LiteEvseState::Charging;
-    case 5:  return LiteEvseState::Error;          // fault / GFI / lockout
-    default: return LiteEvseState::Unknown;        // incl. 4 and >= 6
+    case JB_S_CHARGING:
+    case JB_S_PRECHARGE: return LiteEvseState::Charging;
+    case JB_S_FAULT:     return LiteEvseState::Error;
+    case JB_S_INIT:
+    case JB_S_READY:
+    case JB_S_STANDBY:
+    case JB_S_IDLE:      return LiteEvseState::NotConnected;
+    default:             return LiteEvseState::Unknown;
   }
 }
 

@@ -17,9 +17,30 @@ struct JuiceBoxFrame {
 };
 
 // Decoded $ES status fields (raw JB values, pre-normalization).
+// Field semantics per SERIAL_PROTOCOL.md §2a (static decode of THIS unit's FW 100102):
+//   state = "S" state-machine code (HEX on the wire; see JbStateCode)
+//   line  = "L" — always 00 / unused
+//   temp  = "T" — echo of the last TP-command value, NOT a temperature sensor
+//   h     = "H" — quantized control-pilot voltage bucket (J1772 connection level)
+//   amps  = "A" — live active current limit (echoes our setpoint)
+//   power = "P" — control-pilot PWM duty, NOT watts
+//   offline_limit = "F" — echo of the offline/fallback current limit (RAM 0x520),
+//                   NOT a fault and NOT frequency. Faults come from S==0x05 + $MD/$WR.
 struct JuiceBoxStatus {
   bool valid;
-  int  state, line, temp, h, amps, power, fault;
+  int  state, line, temp, h, amps, power, offline_limit;
+};
+
+// $ES "S" state-machine codes. These are HEX on the wire (e.g. "S31" => 0x31).
+// Per SERIAL_PROTOCOL.md §2a jump-table walk: exactly 7 valid codes.
+enum JbStateCode {
+  JB_S_INIT      = 0x00,  // init / reset (contactor open)
+  JB_S_READY     = 0x01,  // ready — pilot setup
+  JB_S_STANDBY   = 0x02,  // standby poll
+  JB_S_FAULT     = 0x05,  // FAULT (forces contactor open) — see $MD/$WR for the code
+  JB_S_IDLE      = 0x11,  // idle / connected poll (hub state)
+  JB_S_PRECHARGE = 0x21,  // pre-charge (contactor opening toward charge)
+  JB_S_CHARGING  = 0x31,  // CHARGING (contactor closed)
 };
 
 // Split a frame body (everything AFTER the leading '$') into type + payload.
@@ -44,8 +65,10 @@ private:
 // Decode a $ES payload (e.g. "S00,L00,T00,H00,A00,P000,F00") into JuiceBoxStatus.
 bool juicebox_parse_es(const char *payload, uint16_t len, JuiceBoxStatus &out);
 
-// Map a raw JB S-field code onto the canonical state (code values are LIKELY per
-// the Task 1 RE note — only the 0..5 range is confirmed; HW-verify the mapping).
+// Map a raw JB S-field code (hex value, see JbStateCode) onto the canonical state.
+// FIRM: 0x31/0x21 => Charging, 0x05 => Error. The idle/poll codes (00/01/02/11) map
+// to NotConnected — S alone cannot tell "vehicle plugged, not charging" from "no
+// vehicle"; distinguishing Connected needs the H pilot-voltage field (follow-up).
 LiteEvseState juicebox_map_state(int raw);
 
 // Build "$<type><LLL hex>:<payload>" into buf. Returns bytes written, 0 on overflow.
