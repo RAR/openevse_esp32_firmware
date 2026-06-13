@@ -16,8 +16,15 @@
 #include "espal_lite.h"
 #include "lite_config_store.h"
 #include "lite_charge_policy.h"
+#include <WiFi.h>
+#include "lite_openevse_compat.h"
 
 #include "mongoose.h"
+
+// Reported as OpenEVSE `firmware`/`version` so the HA integration shows a value.
+#ifndef LITE_FW_VERSION
+#define LITE_FW_VERSION "lite-3a"
+#endif
 
 // Manual override is defined in main_lite.cpp; reached here for /override + status.
 extern ManualOverride manual;
@@ -33,23 +40,69 @@ static LiteEvseManager *s_mgr_ctrl = NULL;
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
 static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest JuiceBox sold)
 
-// Build the /status JSON from the live backend.
+// Build the /status JSON in the OpenEVSE local-API shape the firstof9/openevse
+// Home Assistant integration consumes (it polls this every 60 s). Keys it reads
+// but a JuiceBox can't provide (divert/shaper/OCPP/GFCI counts/etc.) are simply
+// omitted — the integration's .get() defaults tolerate absent keys.
 static void build_status_json(String &out)
 {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<1024> doc;
+
   if (s_mgr_ctrl) {
-    doc["state"]  = s_mgr_ctrl->getEvseState();
-    doc["amp"]    = s_mgr_ctrl->getAmps();
-    doc["temp"]   = s_mgr_ctrl->getTemperature();
-    doc["charging"] = s_mgr_ctrl->isCharging() ? 1 : 0;
+    LiteEvseState dev   = s_mgr_ctrl->getDeviceState();
+    bool disabled       = (s_mgr_ctrl->getState() == EvseState::Disabled);
+
+    // State (int + string), per the OpenEVSE contract.
+    doc["state"]  = openevse_state_code(dev, disabled);
+    doc["status"] = openevse_status_str(dev, disabled);
+
+    // Live telemetry.
+    int amp   = s_mgr_ctrl->getAmps();
+    int power = s_mgr_ctrl->getPower();
+    doc["amp"]               = amp;
+    doc["pilot"]             = (uint32_t)s_mgr_ctrl->getChargeCurrent(); // advertised setpoint
+    doc["power"]             = power;
+    doc["tempt"]             = s_mgr_ctrl->getTemperature();
+    doc["temp2"]             = s_mgr_ctrl->getTemperature();
+    doc["max_current_soft"]  = (uint32_t)s_mgr_ctrl->getChargeCurrent();
+    doc["max_current_hard"]  = s_mgr_ctrl->getMaxHardwareCurrent();
+    doc["min_current_hard"]  = s_mgr_ctrl->getMinCurrent();
+    doc["available_current"] = (uint32_t)s_mgr_ctrl->getMaxCurrent();
+    doc["manual_override"]   = manual.isActive() ? 1 : 0;
+    doc["mode"]              = "fast";
+
+    // Derived voltage: power / amps while charging, else nominal 240 V. Keeps
+    // HA's V x I ~= power consistent without a sensor the JuiceBox lacks.
+    doc["voltage"] = (amp > 0 && power > 0) ? (power / amp) : 240;
+
+    // Session energy (host-side accumulator).
+    doc["wattsec"]        = (uint32_t)s_mgr_ctrl->getSessionWattSeconds();
+    doc["watthour"]       = (uint32_t)s_mgr_ctrl->getSessionWattHours();
+    doc["session_energy"] = (uint32_t)s_mgr_ctrl->getSessionWattHours();
+    doc["elapsed"]        = (uint32_t)s_mgr_ctrl->getSessionElapsed();
+
+    // Backend-specific extras (hw/fw/protocol/md/wc/wr/line + state_str). The
+    // `wr` key carries the raw $WR fault string (the fault detail for state 8).
     s_mgr_ctrl->addStatusFields(doc);
-    doc["max_current_soft"] = (uint32_t)s_mgr_ctrl->getChargeCurrent();
-    doc["max_current_hard"] = s_mgr_ctrl->getMaxHardwareCurrent();
+
+    // Control/claim diagnostics (retained from the prior status body).
     doc["claims"] = (uint32_t)s_mgr_ctrl->activeClaimCount();
     doc["manual"] = manual.isActive() ? 1 : 0;
   }
+
+  // Identity / system.
+  doc["firmware"]  = LITE_FW_VERSION;
+  doc["version"]   = LITE_FW_VERSION;
+  { IPAddress ip = WiFi.localIP();
+    char ipbuf[16];
+    snprintf(ipbuf, sizeof(ipbuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    doc["ipaddress"] = ipbuf; }
+  doc["ssid"]      = WiFi.SSID();
+  doc["srssi"]     = WiFi.RSSI();
   doc["free_heap"] = ESPAL.getFreeHeap();
+  doc["freeram"]   = ESPAL.getFreeHeap();
   doc["uptime"]    = (uint32_t)(millis() / 1000);
+
   serializeJson(doc, out);
 }
 
