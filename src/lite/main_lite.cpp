@@ -8,6 +8,7 @@
 #include "espal_lite.h"
 #include "web_server_lite.h"
 #include "lite_evse_backend.h"
+#include "lite_config_store.h"
 
 #if defined(LITE_EVSE_BACKEND_JUICEBOX)
 #include "juicebox_backend.h"
@@ -48,7 +49,8 @@ void setup()
   }
 
   s_backend.begin();
-  web_server_lite_begin(s_backend);
+  lite_config_begin();              // mount FlashDB KVDB (kvs partition) before config load
+  web_server_lite_begin(s_backend); // loads config -> clamps -> applies charge current
 
   // Now that Serial + the backend parser are up, give the Atmel a clean, synchronized
   // restart via its RESET line (PF11, active-low) so we capture its full boot burst —
