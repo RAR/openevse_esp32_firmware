@@ -1,5 +1,6 @@
 #ifdef OPENEVSE_LITE
 #include "lite_config_store.h"
+#include "lite_energy_totals.h"
 
 #include <flashdb.h>
 #include <string.h>
@@ -110,5 +111,43 @@ void lite_config_erase()
   if (!s_ready) return;
   fdb_kv_del(&s_kvdb, "wifi_ssid");
   fdb_kv_del(&s_kvdb, "wifi_pass");
+}
+
+// --- Energy totals (POD blob) ---
+
+bool lite_config_load_totals(LiteEnergyTotals &out)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  fdb_kv_get_blob(&s_kvdb, "energy_totals", fdb_blob_make(&blob, &out, sizeof(out)));
+  return blob.saved.len == sizeof(out);   // full struct present
+}
+
+bool lite_config_save_totals(const LiteEnergyTotals &in)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  return fdb_kv_set_blob(&s_kvdb, "energy_totals",
+                         fdb_blob_make(&blob, &in, sizeof(in))) == FDB_NO_ERR;
+}
+
+// --- Clock config (sntp_hostname + tz_offset_min) ---
+
+bool lite_config_load_clock(LiteClockConfig &out)
+{
+  out.sntp_hostname = "pool.ntp.org";   // defaults
+  out.tz_offset_min = 0;
+  if (!s_ready) return false;
+  kv_get_str("sntp_hostname", out.sntp_hostname);
+  kv_get_int("tz_offset_min", out.tz_offset_min);
+  return true;
+}
+
+bool lite_config_save_clock(const LiteClockConfig &in)
+{
+  if (!s_ready) return false;
+  bool ok = kv_set_str("sntp_hostname", in.sntp_hostname);
+  ok = kv_set_int("tz_offset_min", in.tz_offset_min) && ok;
+  return ok;
 }
 #endif

@@ -1,6 +1,7 @@
 #pragma once
 #ifdef OPENEVSE_LITE
 #include <Arduino.h>
+#include "lite_energy_totals.h"
 
 struct LiteWifiConfig { String ssid; String pass; };
 
@@ -22,4 +23,13 @@ bool lite_config_load_evse(LiteEvseConfig &out);  // false if max_current_hard k
 bool lite_config_save_evse(const LiteEvseConfig &in);
 
 void lite_config_erase();                         // wipe WiFi creds (eraseConfig)
+
+// Clock config (mirrors upstream keys: sntp_hostname/"sh", time_zone offset).
+struct LiteClockConfig { String sntp_hostname; int tz_offset_min; };
+
+bool lite_config_load_totals(LiteEnergyTotals &out);   // false if key absent (caller inits)
+bool lite_config_save_totals(const LiteEnergyTotals &in);
+
+bool lite_config_load_clock(LiteClockConfig &out);     // fills defaults if keys absent
+bool lite_config_save_clock(const LiteClockConfig &in);
 #endif
