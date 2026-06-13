@@ -24,12 +24,11 @@ void JuiceBoxBackend::loop() {
   }
 
   unsigned long now = millis();
-  // Keepalive = re-send the MCU's OWN reported amps (idempotent: holds the comm
-  // watchdog without changing charge current). Gated on: (a) we've seen the MCU
-  // (_everRx) so we don't transmit into a silent line, and (b) we have a valid
-  // $ES (_status.valid) so we echo a REAL amps value — echoing 0 before we know
-  // the state would command 0 A and pause charging.
-  if (_everRx && _status.valid && (now - _lastBeatMillis) >= JB_KEEPALIVE_INTERVAL_MS) {
+  // Keepalive holds the comm watchdog. IMPORTANT (RE-confirmed): $SL is the only $S
+  // keepalive and it ALWAYS sets the J1772 pilot current — there is NO current-neutral
+  // heartbeat — so we advertise a deliberate safe limit (_chargeLimit, default 6 A floor),
+  // never the MCU's reported max. Gated on _everRx so we don't transmit into a silent line.
+  if (_everRx && (now - _lastBeatMillis) >= JB_KEEPALIVE_INTERVAL_MS) {
     sendKeepalive();
     _lastBeatMillis = now;
   }
@@ -69,8 +68,10 @@ void JuiceBoxBackend::handleFrame(const JuiceBoxFrame &f) {
 }
 
 void JuiceBoxBackend::sendKeepalive() {
+  // Advertise the deliberate safe limit, not the MCU's reported max. juicebox_build_amps_set
+  // clamps to [0,79]; the MCU further clamps <6 up to the 6 A J1772 floor.
   char buf[32];
-  size_t n = juicebox_build_amps_set(_status.amps, buf, sizeof(buf));
+  size_t n = juicebox_build_amps_set(_chargeLimit, buf, sizeof(buf));
   if (n) _port.write((const uint8_t *)buf, n);
 }
 

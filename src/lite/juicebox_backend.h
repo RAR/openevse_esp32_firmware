@@ -35,6 +35,9 @@ private:
   unsigned long  _lastRxMillis   = 0;
   unsigned long  _lastBeatMillis = 0;
   bool           _everRx         = false;   // flips true only after a frame is received
+  // Charge-current limit (A) advertised by the keepalive. Safe 6 A J1772 floor by default;
+  // a future control feature will make this settable. NEVER auto-track the MCU's reported max.
+  int            _chargeLimit    = 6;
   char _hw[24] = {0};
   char _fw[16] = {0};
   char _pv[8]  = {0};
