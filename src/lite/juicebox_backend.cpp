@@ -5,7 +5,13 @@
 // Comm-watchdog reload is ~3000 ticks (~3 s, LIKELY per the Task 1 RE note);
 // keepalive comfortably under it. Adjust once the timeout is HW-confirmed.
 static const unsigned long JB_KEEPALIVE_INTERVAL_MS = 1000;
-static const unsigned long JB_OFFLINE_TIMEOUT_MS    = 5000;
+// Offline timeout must EXCEED the Atmel's slowest liveness frame. HW-observed
+// 2026-06-13: in steady state the ONLY inbound frame is a $TP ping every ~63 s
+// (metronomic; $ES/$MD only at boot/on-change). A 5 s timeout made isOnline()
+// flap (true for 5 s after each ping, false for the other ~58 s). 90 s clears one
+// ping interval with margin without flapping; a real dead controller still trips
+// offline within ~90 s. Bump toward ~130 s if we ever need to ride out a missed ping.
+static const unsigned long JB_OFFLINE_TIMEOUT_MS    = 90000;
 
 void JuiceBoxBackend::begin() {
   _lastBeatMillis = millis();
