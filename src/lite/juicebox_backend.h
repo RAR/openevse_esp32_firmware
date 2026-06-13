@@ -40,5 +40,6 @@ private:
   char _pv[8]  = {0};
   char _md[48] = {0};
   char _wc[24] = {0};   // last $WC payload (the handshake nonce — live-capture aid)
+  char _wr[48] = {0};   // last $WR fault/report (e.g. "006:GFI Auto Test Fail")
 };
 #endif

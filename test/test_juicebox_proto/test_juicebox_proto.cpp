@@ -133,3 +133,11 @@ TEST_CASE("amps-set clamps an over-limit value to 79") {
   REQUIRE(got);
   CHECK(strcmp(f.payload, "79") == 0);
 }
+
+TEST_CASE("canonical state names are stable") {
+  CHECK(strcmp(lite_evse_state_name(LiteEvseState::NotConnected), "not_connected") == 0);
+  CHECK(strcmp(lite_evse_state_name(LiteEvseState::Connected),    "connected")     == 0);
+  CHECK(strcmp(lite_evse_state_name(LiteEvseState::Charging),     "charging")      == 0);
+  CHECK(strcmp(lite_evse_state_name(LiteEvseState::Error),        "error")         == 0);
+  CHECK(strcmp(lite_evse_state_name(LiteEvseState::Unknown),      "unknown")       == 0);
+}

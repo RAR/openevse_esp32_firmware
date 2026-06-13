@@ -39,13 +39,26 @@ bool JuiceBoxBackend::isOnline() const {
   return _everRx && (millis() - _lastRxMillis) < JB_OFFLINE_TIMEOUT_MS;
 }
 
+// Copy a frame payload into a fixed display buffer, bounded by the frame's declared
+// length so the trailing :tag: (added by a foreign layer, beyond the $-protocol's
+// length-delimited payload) is stripped. Never reads past the parsed (NUL-terminated)
+// payload. Always NUL-terminates.
+static void copy_bounded(char *dst, size_t cap, const char *src, uint16_t len) {
+  size_t n = strlen(src);
+  if (n > len)      n = len;       // strip anything past the declared length (the :tag:)
+  if (n > cap - 1)  n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
 void JuiceBoxBackend::handleFrame(const JuiceBoxFrame &f) {
   if      (!strcmp(f.type, "ES")) { juicebox_parse_es(f.payload, f.len, _status); }
-  else if (!strcmp(f.type, "HW")) { strncpy(_hw, f.payload, sizeof(_hw) - 1); }
-  else if (!strcmp(f.type, "FW")) { strncpy(_fw, f.payload, sizeof(_fw) - 1); }
-  else if (!strcmp(f.type, "PV")) { strncpy(_pv, f.payload, sizeof(_pv) - 1); }
-  else if (!strcmp(f.type, "MD")) { strncpy(_md, f.payload, sizeof(_md) - 1); }
-  else if (!strcmp(f.type, "WC")) { strncpy(_wc, f.payload, sizeof(_wc) - 1); }
+  else if (!strcmp(f.type, "HW")) { copy_bounded(_hw, sizeof(_hw), f.payload, f.len); }
+  else if (!strcmp(f.type, "FW")) { copy_bounded(_fw, sizeof(_fw), f.payload, f.len); }
+  else if (!strcmp(f.type, "PV")) { copy_bounded(_pv, sizeof(_pv), f.payload, f.len); }
+  else if (!strcmp(f.type, "MD")) { copy_bounded(_md, sizeof(_md), f.payload, f.len); }
+  else if (!strcmp(f.type, "WC")) { copy_bounded(_wc, sizeof(_wc), f.payload, f.len); }
+  else if (!strcmp(f.type, "WR")) { copy_bounded(_wr, sizeof(_wr), f.payload, f.len); }
   // other types ignored this slice
 }
 
@@ -56,11 +69,13 @@ void JuiceBoxBackend::sendKeepalive() {
 }
 
 void JuiceBoxBackend::addStatusFields(JsonDocument &doc) const {
+  doc["state_str"] = lite_evse_state_name(getState());
   if (_hw[0]) doc["hw"]       = _hw;
   if (_fw[0]) doc["fw"]       = _fw;
   if (_pv[0]) doc["protocol"] = _pv;
   if (_md[0]) doc["md"]       = _md;
-  if (_wc[0]) doc["wc"]       = _wc;   // handshake nonce — live-capture aid
+  if (_wc[0]) doc["wc"]       = _wc;
+  if (_wr[0]) doc["wr"]       = _wr;
   doc["line"] = _status.line;          // raw JB L field (semantics unknown per RE)
 }
 #endif
