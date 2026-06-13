@@ -20,6 +20,11 @@ public:
   int  getPower() const override { return _status.power; }
   int  getTemp()  const override { return _status.temp; }
   int  getFault() const override { return _status.fault; }
+  // Sets the keepalive's advertised charge current. The Atmel further clamps to
+  // its 6 A floor / <81 A ceiling; host-side policy lives in lite_charge_policy.
+  void setChargeCurrent(int amps) override { _chargeLimit = amps; }
+  // Distinct from getAmps() (the Atmel's reported max/rating in $ES field A).
+  int  getChargeCurrent() const override { return _chargeLimit; }
   void addStatusFields(JsonDocument &doc) const override;
 
 private:

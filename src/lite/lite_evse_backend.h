@@ -17,6 +17,11 @@ public:
   virtual int           getTemp()  const = 0;
   virtual int           getFault() const = 0;
 
+  // Control seam (write surface). Slice 1 ships only the single charge-current
+  // setpoint; the full claim/priority model arrives in Slice 1.5.
+  virtual void setChargeCurrent(int amps) = 0; // desired charge current (A); backend may clamp to its own floor
+  virtual int  getChargeCurrent() const = 0;   // current advertised setpoint
+
   // Backend-specific extras (identity strings, raw fields, ...).
   virtual void addStatusFields(JsonDocument &doc) const = 0;
 };
