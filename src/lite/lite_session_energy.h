@@ -8,6 +8,10 @@
 // Session boundary: a rising edge into charging (charging goes false -> true)
 // starts a fresh session, zeroing energy + elapsed. Stop (charging -> false)
 // freezes the accumulated totals until the next rising edge.
+// wattSeconds()/wattHours() are uint32 — ample for a single charging session
+// (resets per plug-in; wraps only past ~1.19 MWh). The accumulator is `double`
+// (soft-float on the M4F, which is single-precision HW-FP only) for precision
+// across multi-hour sessions.
 class LiteSessionEnergy {
 public:
   LiteSessionEnergy() { reset(); }

@@ -57,3 +57,21 @@ TEST_CASE("long high-power session does not overflow") {
   e.tick(19200, true, 86400000u);
   CHECK(e.wattHours() == 460800u);
 }
+
+TEST_CASE("rising-edge tick does not fold the pre-session idle gap into the new session") {
+  LiteSessionEnergy e;
+  e.tick(0, true, 0);
+  e.tick(7000, true, 3600000);        // session A: 1 h @ 7000 W
+  e.tick(7000, false, 3700000);       // stop
+  // New session whose FIRST (rising-edge) sample is non-zero, after a long idle gap:
+  e.tick(7000, true, 100000000u);     // rising edge with power -> must NOT integrate the gap
+  e.tick(7000, true, 100000000u + 3600000);  // 1 h of real charging
+  CHECK(e.wattHours() == 7000u);      // only the new session's 1 h, no gap leak
+}
+
+TEST_CASE("millis wraparound integrates without a spike") {
+  LiteSessionEnergy e;
+  e.tick(0, true, 0xFFFFF000u);        // rising edge near uint32 max
+  e.tick(3600, true, 0x00001000u);     // wrapped; dt = 0x2000 = 8192 ms
+  CHECK(e.wattSeconds() == 29491u);    // 3600 * 8192 / 1000 = 29491.2 -> 29491
+}

@@ -18,8 +18,9 @@ void LiteSessionEnergy::tick(int power_w, bool charging, uint32_t now_ms) {
   }
 
   // Integrate only while charging and once we have a prior timestamp.
-  if (charging && _haveTick) {
+  if (charging && _haveTick && _prevCharging) {   // skip the rising-edge tick: no real interval to attribute, and avoids folding the stopped gap into the new session
     uint32_t dt_ms = now_ms - _lastTickMs;   // unsigned: wraps correctly
+    // Negative power (V2G / reverse metering) is intentionally ignored.
     if (power_w > 0) {
       _wattSeconds += (double)power_w * (double)dt_ms / 1000.0;
     }
