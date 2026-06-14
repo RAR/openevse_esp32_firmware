@@ -25,6 +25,7 @@
 #include <WiFi.h>
 #include "lite_openevse_compat.h"
 #include "lite_feed.h"
+#include "lite_divert.h"
 
 #include "mongoose.h"
 
@@ -50,6 +51,12 @@ static unsigned long     s_lastSntpAttemptMs = 0;
 static const unsigned long SNTP_RETRY_MS = 30000;  // re-attempt cadence while unsynced/resync-due
 static const unsigned long WS_PUSH_INTERVAL_MS = 1000;  // /ws status push cadence (~1 Hz)
 static unsigned long       s_lastWsPushMs      = 0;
+
+static LiteDivertState s_divertState = { 0.0 };
+static uint32_t        s_divertLastMs = 0;          // for smoothing delta_s
+static uint32_t        s_divertMinChargeEndMs = 0;  // millis when min-charge window ends (0 = disarmed)
+static bool            s_divertWasCharging = false;
+static const uint32_t  FEED_STALE_MS = 120000;      // feed staleness window (fail-safe pause)
 
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
@@ -644,6 +651,56 @@ void web_server_lite_loop()
       }
       s_lastSchedState = st;
     }
+  }
+
+  // Solar-divert (autonomous, OpenEVSE-priority). Claims Active@Divert(50) when excess
+  // solar is sufficient; Disabled@Default(10) when not (so a schedule/manual still wins);
+  // released entirely when divert is disabled. Pure decision in lite_divert_eval; feed
+  // stale -> treat as 0 W (fail-safe wind-down).
+  if (s_mgr_ctrl && s_divertCfg.enabled) {
+    uint32_t now = millis();
+    uint32_t delta_s = s_divertLastMs ? (now - s_divertLastMs) / 1000u : 0u;
+    s_divertLastMs = now;
+
+    bool fresh = (s_divertCfg.type == 0)
+        ? lite_feed_fresh(s_feed.solar_valid, s_feed.solar_ms, now, FEED_STALE_MS)
+        : lite_feed_fresh(s_feed.grid_valid,  s_feed.grid_ms,  now, FEED_STALE_MS);
+    int    solar_w = fresh ? s_feed.solar_w   : 0;
+    int    grid_w  = fresh ? s_feed.grid_ie_w : 0;
+    double volts   = (s_feed.voltage_valid && s_feed.voltage > 1.0) ? s_feed.voltage : 240.0;
+
+    bool active    = (s_mgr_ctrl->getState(EvseClient_OpenEVSE_Divert) == EvseState::Active);
+    bool charging  = s_mgr_ctrl->isCharging();
+    int  present_a = (int)s_mgr_ctrl->getChargeCurrent();   // last resolved current (getAmps proxy)
+    // "min-charge elapsed" (Stop permitted) when the car isn't actually charging OR the timer
+    // expired — mirrors upstream getMinChargeTimeRemaining()==0 on (!isCharging() || timer done).
+    bool min_elapsed = !charging
+                     || (s_divertMinChargeEndMs == 0)
+                     || ((int32_t)(now - s_divertMinChargeEndMs) >= 0);
+
+    LiteDivertCfg dc { (LiteDivertType)s_divertCfg.type, s_divertCfg.pv_ratio,
+                       s_divertCfg.attack_s, s_divertCfg.decay_s, 6 };
+    LiteDivertResult r = lite_divert_eval(dc, s_divertState, solar_w, grid_w, volts,
+                                          present_a, active, min_elapsed, delta_s);
+
+    if (r.action == LiteDivertAction::Charge) {
+      EvseProperties p(EvseState::Active);
+      p.setChargeCurrent((uint32_t)r.charge_rate_a);
+      s_mgr_ctrl->claim(EvseClient_OpenEVSE_Divert, EvseManager_Priority_Divert, p);
+    } else if (r.action == LiteDivertAction::Stop) {
+      EvseProperties p(EvseState::Disabled);
+      s_mgr_ctrl->claim(EvseClient_OpenEVSE_Divert, EvseManager_Priority_Default, p);
+    } // Hold: leave the existing claim untouched
+
+    // Arm the min-charge timer on the rising edge of actual charging.
+    if (charging && !s_divertWasCharging) {
+      s_divertMinChargeEndMs = now + s_divertCfg.min_charge_s * 1000u;
+      if (s_divertMinChargeEndMs == 0) s_divertMinChargeEndMs = 1; // avoid the disarmed sentinel
+    }
+    s_divertWasCharging = charging;
+  } else if (s_mgr_ctrl && s_mgr_ctrl->clientHasClaim(EvseClient_OpenEVSE_Divert)) {
+    s_mgr_ctrl->release(EvseClient_OpenEVSE_Divert);   // divert turned off -> drop the claim
+    s_divertState.smoothed_available = 0;
   }
 
   // Slice 3d: push /status to WebSocket clients at ~1 Hz (only when any are connected;
