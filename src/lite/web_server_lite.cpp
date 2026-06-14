@@ -55,6 +55,9 @@ static unsigned long       s_lastWsPushMs      = 0;
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
 static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest JuiceBox sold)
 
+// Solar-divert config cached in RAM. Seeded at begin() from the store (or upstream defaults).
+static LiteDivertConfig s_divertCfg = { false, 0, 1.1, 20, 600, 600 }; // upstream defaults
+
 // Pushed sensor feed (3c POST /status). Read by the divert/shaper glue below.
 static LiteFeed s_feed;
 
@@ -380,9 +383,15 @@ static void build_status_json(String &out)
 // Serialize the cached config as the canonical /config response body.
 static void config_json(String &out)
 {
-  StaticJsonDocument<64> doc;
+  StaticJsonDocument<256> doc;
   doc["max_current_soft"] = s_cfg.max_current_soft;
   doc["max_current_hard"] = s_cfg.max_current_hard;
+  doc["divert_enabled"]               = s_divertCfg.enabled;
+  doc["divert_type"]                  = s_divertCfg.type;
+  doc["divert_PV_ratio"]              = s_divertCfg.pv_ratio;
+  doc["divert_attack_smoothing_time"] = s_divertCfg.attack_s;
+  doc["divert_decay_smoothing_time"]  = s_divertCfg.decay_s;
+  doc["divert_min_charge_time"]       = s_divertCfg.min_charge_s;
   serializeJson(doc, out);
 }
 
@@ -421,6 +430,17 @@ static void handle_config(struct mg_connection *nc, struct http_message *hm)
     lite_config_save_clock(cc);
     s_sntpHost = hostbuf;
   }
+
+  LiteDivertConfig dcfg = s_divertCfg; bool dany = false;
+  if (mg_get_http_var(&hm->query_string, "divert_enabled", val, sizeof(val)) > 0) { dcfg.enabled = atoi(val) != 0; dany = true; }
+  if (mg_get_http_var(&hm->query_string, "divert_type", val, sizeof(val)) > 0)    { dcfg.type = atoi(val) ? 1 : 0; dany = true; }
+  { char fv[16];
+    if (mg_get_http_var(&hm->query_string, "divert_PV_ratio", fv, sizeof(fv)) > 0)              { dcfg.pv_ratio = atof(fv); dany = true; }
+    if (mg_get_http_var(&hm->query_string, "divert_attack_smoothing_time", fv, sizeof(fv)) > 0) { dcfg.attack_s = (uint32_t)atol(fv); dany = true; }
+    if (mg_get_http_var(&hm->query_string, "divert_decay_smoothing_time", fv, sizeof(fv)) > 0)  { dcfg.decay_s = (uint32_t)atol(fv); dany = true; }
+    if (mg_get_http_var(&hm->query_string, "divert_min_charge_time", fv, sizeof(fv)) > 0)        { dcfg.min_charge_s = (uint32_t)atol(fv); dany = true; }
+  }
+  if (dany) { lite_config_save_divert(dcfg); s_divertCfg = dcfg; }
 
   int status = 200;
   if (any) {
@@ -557,6 +577,8 @@ void web_server_lite_begin(LiteEvseManager &mgr, LiteClock &clock, LiteEnergyTot
   s_cfg.max_current_soft = lite_clamp_charge_current(s_cfg.max_current_soft, s_cfg.max_current_hard);
   mgr.setTargetMaxCurrent((uint32_t)s_cfg.max_current_hard);
   mgr.setTargetChargeCurrent((uint32_t)s_cfg.max_current_soft);
+
+  lite_config_load_divert(s_divertCfg);   // keeps defaults if the key is absent
 
   mg_mgr_init(&s_mgr, NULL);
   // mg_bind takes (mgr, addr, handler, user_data) when MG_ENABLE_CALLBACK_USERDATA=1.

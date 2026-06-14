@@ -34,6 +34,18 @@ bool lite_config_save_totals(const LiteEnergyTotals &in);
 bool lite_config_load_schedule(LiteSchedule &out);     // false if key absent (caller zero-inits)
 bool lite_config_save_schedule(const LiteSchedule &in);
 
+// Solar-divert config. Persisted as a single FlashDB blob ("divert").
+struct LiteDivertConfig {
+  bool     enabled;        // divert_enabled (de)
+  int      type;           // divert_type (dm): 0=SOLAR, 1=GRID
+  double   pv_ratio;       // divert_PV_ratio (dpr)
+  uint32_t attack_s;       // divert_attack_smoothing_time (das)
+  uint32_t decay_s;        // divert_decay_smoothing_time (dds)
+  uint32_t min_charge_s;   // divert_min_charge_time (dt)
+};
+bool lite_config_load_divert(LiteDivertConfig &out);  // false if key absent (caller uses defaults)
+bool lite_config_save_divert(const LiteDivertConfig &in);
+
 bool lite_config_load_clock(LiteClockConfig &out);     // fills defaults if keys absent
 bool lite_config_save_clock(const LiteClockConfig &in);
 #endif

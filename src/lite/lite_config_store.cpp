@@ -149,6 +149,24 @@ bool lite_config_save_schedule(const LiteSchedule &in)
                          fdb_blob_make(&blob, &in, sizeof(in))) == FDB_NO_ERR;
 }
 
+// --- Solar-divert config (POD blob) ---
+
+bool lite_config_load_divert(LiteDivertConfig &out)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  fdb_kv_get_blob(&s_kvdb, "divert", fdb_blob_make(&blob, &out, sizeof(out)));
+  return blob.saved.len == sizeof(out);
+}
+
+bool lite_config_save_divert(const LiteDivertConfig &in)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  return fdb_kv_set_blob(&s_kvdb, "divert",
+                         fdb_blob_make(&blob, &in, sizeof(in))) == FDB_NO_ERR;
+}
+
 // --- Clock config (sntp_hostname + tz_offset_min) ---
 
 bool lite_config_load_clock(LiteClockConfig &out)
