@@ -131,6 +131,24 @@ bool lite_config_save_totals(const LiteEnergyTotals &in)
                          fdb_blob_make(&blob, &in, sizeof(in))) == FDB_NO_ERR;
 }
 
+// --- Weekly schedule (POD blob) ---
+
+bool lite_config_load_schedule(LiteSchedule &out)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  fdb_kv_get_blob(&s_kvdb, "sched", fdb_blob_make(&blob, &out, sizeof(out)));
+  return blob.saved.len == sizeof(out);   // full struct present
+}
+
+bool lite_config_save_schedule(const LiteSchedule &in)
+{
+  if (!s_ready) return false;
+  struct fdb_blob blob;
+  return fdb_kv_set_blob(&s_kvdb, "sched",
+                         fdb_blob_make(&blob, &in, sizeof(in))) == FDB_NO_ERR;
+}
+
 // --- Clock config (sntp_hostname + tz_offset_min) ---
 
 bool lite_config_load_clock(LiteClockConfig &out)

@@ -2,6 +2,7 @@
 #ifdef OPENEVSE_LITE
 #include <Arduino.h>
 #include "lite_energy_totals.h"
+#include "lite_schedule.h"
 
 struct LiteWifiConfig { String ssid; String pass; };
 
@@ -29,6 +30,9 @@ struct LiteClockConfig { String sntp_hostname; int tz_offset_min; };
 
 bool lite_config_load_totals(LiteEnergyTotals &out);   // false if key absent (caller inits)
 bool lite_config_save_totals(const LiteEnergyTotals &in);
+
+bool lite_config_load_schedule(LiteSchedule &out);     // false if key absent (caller zero-inits)
+bool lite_config_save_schedule(const LiteSchedule &in);
 
 bool lite_config_load_clock(LiteClockConfig &out);     // fills defaults if keys absent
 bool lite_config_save_clock(const LiteClockConfig &in);
