@@ -15,6 +15,7 @@
 #include "lite_led.h"
 #include "WiFiStatusLed.h"   // ltWifiStatusLedEnable — WiFi lib header, on the path via <WiFi.h>
 #include "manual.h"
+#include "lite_provision.h"
 
 #if defined(LITE_EVSE_BACKEND_JUICEBOX)
 #include "juicebox_backend.h"
@@ -31,14 +32,18 @@ static LiteEnergyTotals s_totals;
 static bool s_wasCharging = false;  // for the charge->idle accrual edge
 ManualOverride manual(s_manager);
 
-// WiFi creds: real values arrive via PLATFORMIO_BUILD_FLAGS (-D LITE_WIFI_SSID=...).
-// When unset, fall back to the placeholder *_DEFAULT macros from platformio.ini.
-#ifndef LITE_WIFI_SSID
-#define LITE_WIFI_SSID LITE_WIFI_SSID_DEFAULT
+// WiFi creds are provisioned at runtime via softAP (D1 stored-only — no
+// compile-time creds; see lite_provision). Boot tries stored creds with a bounded
+// connect; falls to an open softAP on no-creds-or-connect-fail (D2). A unit that
+// fell back because stored creds FAILED periodically retries STA (D3).
+#ifndef LITE_STA_CONNECT_TIMEOUT_MS
+#define LITE_STA_CONNECT_TIMEOUT_MS 60000u
 #endif
-#ifndef LITE_WIFI_PASS
-#define LITE_WIFI_PASS LITE_WIFI_PASS_DEFAULT
+#ifndef LITE_AP_RETRY_INTERVAL_MS
+#define LITE_AP_RETRY_INTERVAL_MS 300000u
 #endif
+static bool     s_apCredsFailed = false;  // D3: only retry STA if creds existed-but-failed
+static uint32_t s_apSinceMs     = 0;      // millis() when the current AP window began
 
 void setup()
 {
@@ -57,13 +62,36 @@ void setup()
   Serial.begin(115200);
   ESPAL.begin();
 
-  WiFi.begin(LITE_WIFI_SSID, LITE_WIFI_PASS);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(250);
+  lite_config_begin();              // mount FlashDB KVDB (kvs partition) FIRST — creds live here now
+
+  // Stored-only creds (D1). Try them with a bounded connect; on no-creds or a
+  // connect that doesn't land within LITE_STA_CONNECT_TIMEOUT_MS, fall to an open
+  // softAP at 192.168.4.1 with SSID OpenEVSE-Lite-<shortid> (D2). The wait loop is
+  // bounded by lite_provision_decide()'s timeout — no unbounded blocking.
+  LiteWifiConfig creds;
+  bool haveCreds = lite_config_load_wifi(creds);
+  if (haveCreds) {
+    WiFi.begin(creds.ssid.c_str(), creds.pass.c_str());
+    uint32_t start = millis();
+    while (lite_provision_decide(true, WiFi.status() == WL_CONNECTED,
+                                 start, millis(), LITE_STA_CONNECT_TIMEOUT_MS)
+           == LiteProvisionAction::StaWait) {
+      delay(250);
+    }
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    web_server_lite_set_ap_mode(false);
+  } else {
+    char ssid[32];
+    lite_provision_ap_ssid(ESPAL.getShortId().c_str(), ssid, sizeof(ssid));
+    WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+    WiFi.softAP(ssid);                // open AP (no passphrase) for easy join
+    web_server_lite_set_ap_mode(true);
+    s_apCredsFailed = haveCreds;      // D3: retry STA only if creds existed-but-failed
+    s_apSinceMs     = millis();
   }
 
   s_backend.begin();
-  lite_config_begin();              // mount FlashDB KVDB (kvs partition) before config load
   if (!lite_config_load_totals(s_totals)) {
     energy_totals_init(s_totals);   // first boot / key absent
   }
@@ -94,6 +122,34 @@ void setup()
 
 void loop()
 {
+  // D3 auto-recovery: when AP because stored creds FAILED, periodically drop the
+  // AP and re-attempt STA so a unit knocked off by a flaky router rejoins itself.
+  // A no-creds unit (s_apCredsFailed=false) stays in AP indefinitely (nothing to retry).
+  if (web_server_lite_in_ap_mode() &&
+      lite_provision_should_retry_sta(s_apCredsFailed, s_apSinceMs, millis(),
+                                      LITE_AP_RETRY_INTERVAL_MS)) {
+    WiFi.softAPdisconnect(true);
+    LiteWifiConfig c;
+    if (lite_config_load_wifi(c)) {
+      WiFi.begin(c.ssid.c_str(), c.pass.c_str());
+      uint32_t start = millis();
+      while (lite_provision_decide(true, WiFi.status() == WL_CONNECTED,
+                                   start, millis(), LITE_STA_CONNECT_TIMEOUT_MS)
+             == LiteProvisionAction::StaWait) {
+        delay(250);
+      }
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      web_server_lite_set_ap_mode(false);
+    } else {
+      char ssid[32];
+      lite_provision_ap_ssid(ESPAL.getShortId().c_str(), ssid, sizeof(ssid));
+      WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+      WiFi.softAP(ssid);
+      s_apSinceMs = millis();           // reset the retry window
+    }
+  }
+
   web_server_lite_loop();
   s_backend.loop();
   s_manager.loop();   // ticks session energy; fires its own session-complete edge
