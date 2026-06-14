@@ -24,6 +24,7 @@
 #include "lite_ws.h"
 #include <WiFi.h>
 #include "lite_openevse_compat.h"
+#include "lite_feed.h"
 
 #include "mongoose.h"
 
@@ -53,6 +54,9 @@ static unsigned long       s_lastWsPushMs      = 0;
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
 static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest JuiceBox sold)
+
+// Pushed sensor feed (3c POST /status). Read by the divert/shaper glue below.
+static LiteFeed s_feed;
 
 // ---- /override (Slice 3b) volatile state (not persisted; resets on reboot) -------------
 static LiteOverrideLimits s_ovrLimits;            // limits of the active override
@@ -272,6 +276,20 @@ static void handle_override(struct mg_connection *nc, struct http_message *hm) {
   mg_printf(nc, "%s", body.c_str());
 }
 
+// Parse a POST /status JSON body into the pushed-feed store. Each key is optional
+// (omit-when-absent): only present keys update. Mirrors the OpenEVSE handleStatusPost
+// contract the firstof9 integration already sends.
+static void status_post_apply(const char *body, size_t len)
+{
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, body, len) != DeserializationError::Ok) return;
+  uint32_t now = millis();
+  if (doc.containsKey("solar"))           lite_feed_set_solar  (s_feed, doc["solar"].as<int>(),           now);
+  if (doc.containsKey("grid_ie"))         lite_feed_set_grid_ie(s_feed, doc["grid_ie"].as<int>(),         now);
+  if (doc.containsKey("voltage"))         lite_feed_set_voltage(s_feed, doc["voltage"].as<double>(),      now);
+  if (doc.containsKey("shaper_live_pwr")) lite_feed_set_shaper (s_feed, doc["shaper_live_pwr"].as<int>(), now);
+}
+
 // Build the /status JSON in the OpenEVSE local-API shape the firstof9/openevse
 // Home Assistant integration consumes (it polls this every 60 s). Keys it reads
 // but a JuiceBox can't provide (divert/shaper/OCPP/GFCI counts/etc.) are simply
@@ -349,6 +367,12 @@ static void build_status_json(String &out)
     doc["total_year"]     = s_totals->year_wh   / 1000.0;
     doc["total_switches"] = s_totals->switches;
   }
+
+  // Echo the freshest pushed feed (3c) so dashboards / the HA integration can read it back.
+  if (s_feed.solar_valid)   doc["solar"]           = s_feed.solar_w;
+  if (s_feed.grid_valid)    doc["grid_ie"]         = s_feed.grid_ie_w;
+  if (s_feed.voltage_valid) doc["voltage"]         = s_feed.voltage;
+  if (s_feed.shaper_valid)  doc["shaper_live_pwr"] = s_feed.shaper_w;
 
   serializeJson(doc, out);
 }
@@ -479,10 +503,17 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   struct http_message *hm = (struct http_message *)p;
 
   if (mg_vcmp(&hm->uri, "/status") == 0) {
-    String body;
-    build_status_json(body);
-    mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
-    mg_printf(nc, "%s", body.c_str());
+    if (mg_vcmp(&hm->method, "POST") == 0) {
+      status_post_apply(hm->body.p, hm->body.len);
+      const char *ok = "{\"msg\":\"OK\"}";
+      mg_send_head(nc, 200, strlen(ok), "Content-Type: application/json");
+      mg_printf(nc, "%s", ok);
+    } else {
+      String body;
+      build_status_json(body);
+      mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
+      mg_printf(nc, "%s", body.c_str());
+    }
   } else if (mg_vcmp(&hm->uri, "/config") == 0) {
     handle_config(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/override") == 0) {
