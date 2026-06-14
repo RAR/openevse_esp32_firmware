@@ -6,7 +6,7 @@
 #endif
 
 enum class LiteDivertType  : uint8_t { Solar = 0, Grid = 1 };
-enum class LiteDivertAction : uint8_t { Charge, Stop, Hold };  // Hold = no claim change
+enum class LiteDivertAction : uint8_t { Hold, Charge, Stop };  // Hold(=0, safe default) = no claim change
 
 struct LiteDivertCfg {
   LiteDivertType type;

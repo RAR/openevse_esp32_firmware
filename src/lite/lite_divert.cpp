@@ -6,6 +6,10 @@ LiteDivertResult lite_divert_eval(const LiteDivertCfg &cfg, LiteDivertState &st,
     int solar_w, int grid_ie_w, double voltage, int evse_present_a,
     bool currently_active, bool min_charge_elapsed, uint32_t delta_s)
 {
+  // Defensive: a 0/garbage voltage would make solar/voltage = inf and (int)floor(inf) UB.
+  // The glue normally supplies a 240 V nominal fallback; clamp here too so the unit is safe standalone.
+  if (voltage < 1.0) voltage = 240.0;
+
   LiteDivertResult r{};
   double available = 0.0;
 
