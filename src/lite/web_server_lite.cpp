@@ -21,6 +21,7 @@
 #include "lite_charge_policy.h"
 #include "lite_override.h"
 #include "lite_schedule.h"
+#include "lite_ws.h"
 #include <WiFi.h>
 #include "lite_openevse_compat.h"
 
@@ -28,7 +29,7 @@
 
 // Reported as OpenEVSE `firmware`/`version` so the HA integration shows a value.
 #ifndef LITE_FW_VERSION
-#define LITE_FW_VERSION "lite-4"
+#define LITE_FW_VERSION "lite-4ws"
 #endif
 
 // Manual override is defined in main_lite.cpp; reached here for /override + status.
@@ -46,6 +47,8 @@ static LiteEnergyTotals *s_totals = nullptr;
 static String            s_sntpHost = "pool.ntp.org";
 static unsigned long     s_lastSntpAttemptMs = 0;
 static const unsigned long SNTP_RETRY_MS = 30000;  // re-attempt cadence while unsynced/resync-due
+static const unsigned long WS_PUSH_INTERVAL_MS = 1000;  // /ws status push cadence (~1 Hz)
+static unsigned long       s_lastWsPushMs      = 0;
 
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
@@ -429,11 +432,46 @@ static void sntp_ev_handler(struct mg_connection *nc, int ev, void *p, void *use
   }
 }
 
+// Push the current /status JSON to every connected WebSocket client. Cheap pre-scan first:
+// build the body only when at least one WS client exists. Connection pointers are never
+// cached across calls (each scan is live), so a client that dropped is simply not seen.
+static int ws_broadcast_status()
+{
+  bool any = false;
+  for (struct mg_connection *c = mg_next(&s_mgr, NULL); c != NULL; c = mg_next(&s_mgr, c)) {
+    if (c->flags & MG_F_IS_WEBSOCKET) { any = true; break; }
+  }
+  if (!any) return 0;
+
+  String body;
+  build_status_json(body);
+  int n = 0;
+  for (struct mg_connection *c = mg_next(&s_mgr, NULL); c != NULL; c = mg_next(&s_mgr, c)) {
+    if (c->flags & MG_F_IS_WEBSOCKET) {
+      mg_send_websocket_frame(c, WEBSOCKET_OP_TEXT, body.c_str(), body.length());
+      n++;
+    }
+  }
+  return n;
+}
+
 // MG_ENABLE_CALLBACK_USERDATA=1 (default in this mongoose build), so handlers
 // take a 4th void* user_data argument.
 static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_data)
 {
   (void)user_data;
+
+  // WebSocket (Slice 3d): push the current /status to a newly-connected client; ignore
+  // inbound frames (the /ws channel is push-only — control stays on HTTP /override etc.).
+  if (ev == MG_EV_WEBSOCKET_HANDSHAKE_DONE) {
+    String body;
+    build_status_json(body);
+    mg_send_websocket_frame(nc, WEBSOCKET_OP_TEXT, body.c_str(), body.length());
+    return;
+  }
+  if (ev == MG_EV_WEBSOCKET_FRAME) {
+    return;
+  }
   if (ev != MG_EV_HTTP_REQUEST) {
     return;
   }
@@ -555,6 +593,13 @@ void web_server_lite_loop()
     }
   }
 
+  // Slice 3d: push /status to WebSocket clients at ~1 Hz (only when any are connected;
+  // ws_broadcast_status() does a cheap pre-scan and skips the JSON build otherwise).
+  if (lite_ws_should_push(millis(), s_lastWsPushMs, WS_PUSH_INTERVAL_MS)) {
+    ws_broadcast_status();
+    s_lastWsPushMs = millis();
+  }
+
   unsigned long nowMs = millis();
   if (s_clock && s_clock->resyncDue(nowMs) &&
       (nowMs - s_lastSntpAttemptMs) >= SNTP_RETRY_MS) {
@@ -566,7 +611,7 @@ void web_server_lite_loop()
   struct mg_connection *c, *tmp;
   for (c = mg_next(&s_mgr, NULL); c != NULL; c = tmp) {
     tmp = mg_next(&s_mgr, c); // fetch next before a possible close invalidates c
-    if (!(c->flags & MG_F_LISTENING) &&
+    if (!(c->flags & MG_F_LISTENING) && !(c->flags & MG_F_IS_WEBSOCKET) &&
         (now - (double)c->last_io_time) > LITE_CONN_IDLE_SECS) {
       c->flags |= MG_F_CLOSE_IMMEDIATELY;
     }
