@@ -551,7 +551,10 @@ static int ws_broadcast_status()
 static void handle_scan(struct mg_connection *nc)
 {
   int16_t n = WiFi.scanNetworks();        // blocking; count, or <0 on error
-  StaticJsonDocument<1024> doc;
+  // Sized for the 32-entry loop ceiling (~70 B/entry) so a dense RF environment
+  // can't silently drop the user's home AP from the setup-page list. Matches the
+  // stack-doc sizing convention used by schedule_get_json above.
+  StaticJsonDocument<3072> doc;
   JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < n && i < 32; i++) {
     String ssid = WiFi.SSID((uint8_t)i);
