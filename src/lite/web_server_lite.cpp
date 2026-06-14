@@ -390,6 +390,29 @@ void web_server_lite_loop()
 {
   mg_mgr_poll(&s_mgr, 0);
 
+  // Slice 3b: enforce override session limits + auto-release. Pure decision in
+  // lite_override_evaluate; this is the thin wiring to the manager seam.
+  if (s_mgr_ctrl) {
+    bool charging    = s_mgr_ctrl->isCharging();
+    bool fallingEdge = (s_wasCharging && !charging);
+    s_wasCharging    = charging;
+    if (manual.isActive() && !s_ovrExpired) {
+      EvseProperties cur; bool haveCur = manual.getProperties(cur);
+      LiteOverrideAction act = lite_override_evaluate(
+          s_ovrLimits,
+          s_mgr_ctrl->getSessionWattHours(),
+          s_mgr_ctrl->getSessionElapsed(),
+          true, s_ovrEnabling, haveCur && cur.isAutoRelease(), fallingEdge);
+      if (act == LiteOverrideAction::Stop) {
+        EvseProperties p(EvseState::Disabled);
+        manual.claim(p);
+        s_ovrExpired = true; s_ovrEnabling = false;   // sticky: stays stopped until DELETE
+      } else if (act == LiteOverrideAction::Release) {
+        override_clear();
+      }
+    }
+  }
+
   unsigned long nowMs = millis();
   if (s_clock && s_clock->resyncDue(nowMs) &&
       (nowMs - s_lastSntpAttemptMs) >= SNTP_RETRY_MS) {
