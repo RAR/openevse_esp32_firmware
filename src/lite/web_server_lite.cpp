@@ -1,6 +1,7 @@
 #ifdef OPENEVSE_LITE
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <stdlib.h>
 
 // IMPORTANT include order: pull in all the C++ / ArduinoJson headers FIRST,
 // then mongoose.h LAST. mongoose.h -> platform_custom.h forces
@@ -54,7 +55,7 @@ static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest Jui
 // omitted — the integration's .get() defaults tolerate absent keys.
 static void build_status_json(String &out)
 {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<1280> doc;
 
   if (s_mgr_ctrl) {
     LiteEvseState dev   = s_mgr_ctrl->getDeviceState();
@@ -111,6 +112,20 @@ static void build_status_json(String &out)
   doc["freeram"]   = ESPAL.getFreeHeap();
   doc["uptime"]    = (uint32_t)(millis() / 1000);
 
+  if (s_clock && s_clock->valid()) {
+    char isobuf[24];
+    lite_clock_iso8601(s_clock->nowUtc(millis()), isobuf, sizeof(isobuf));
+    doc["time"] = isobuf;                        // ISO-8601 UTC; omitted until first sync
+  }
+  if (s_totals) {
+    doc["total_energy"]   = s_totals->lifetime_wh / 1000.0;  // kWh
+    doc["total_day"]      = s_totals->day_wh    / 1000.0;
+    doc["total_week"]     = s_totals->week_wh   / 1000.0;
+    doc["total_month"]    = s_totals->month_wh  / 1000.0;
+    doc["total_year"]     = s_totals->year_wh   / 1000.0;
+    doc["total_switches"] = s_totals->switches;
+  }
+
   serializeJson(doc, out);
 }
 
@@ -142,6 +157,21 @@ static void handle_config(struct mg_connection *nc, struct http_message *hm)
   if (mg_get_http_var(&hm->query_string, "max_current_soft", val, sizeof(val)) > 0) {
     cfg.max_current_soft = atoi(val);
     any = true;
+  }
+
+  char tzbuf[8];
+  if (mg_get_http_var(&hm->query_string, "tz_offset_min", tzbuf, sizeof(tzbuf)) > 0) {
+    LiteClockConfig cc; lite_config_load_clock(cc);
+    cc.tz_offset_min = atoi(tzbuf);
+    lite_config_save_clock(cc);
+    if (s_clock) s_clock->setTzOffsetMinutes(cc.tz_offset_min);
+  }
+  char hostbuf[48];
+  if (mg_get_http_var(&hm->query_string, "sntp_hostname", hostbuf, sizeof(hostbuf)) > 0) {
+    LiteClockConfig cc; lite_config_load_clock(cc);
+    cc.sntp_hostname = hostbuf;
+    lite_config_save_clock(cc);
+    s_sntpHost = hostbuf;
   }
 
   int status = 200;
