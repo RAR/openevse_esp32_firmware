@@ -28,7 +28,7 @@
 
 // Reported as OpenEVSE `firmware`/`version` so the HA integration shows a value.
 #ifndef LITE_FW_VERSION
-#define LITE_FW_VERSION "lite-3b"
+#define LITE_FW_VERSION "lite-4"
 #endif
 
 // Manual override is defined in main_lite.cpp; reached here for /override + status.
@@ -530,6 +530,28 @@ void web_server_lite_loop()
       } else if (act == LiteOverrideAction::Release) {
         override_clear();
       }
+    }
+  }
+
+  // Slice 4: time-of-day schedule. Resolve the active scheduled state from the local
+  // wall-clock and claim it via the Schedule client (priority below a manual override).
+  // Released while the clock is unsynced (no time basis). Re-claim only on change.
+  if (s_mgr_ctrl && s_clock) {
+    uint8_t st = 0;
+    if (s_clock->valid()) {
+      uint32_t local = s_clock->nowLocal(millis());
+      int dow = (int)(((local / 86400u) + 4u) % 7u);  // 1970-01-01 = Thursday; Sun=0
+      uint32_t sod = local % 86400u;
+      st = lite_schedule_active_state(s_schedule, dow, sod);
+    }
+    if (st != s_lastSchedState) {
+      if (st == 0) {
+        s_mgr_ctrl->release(EvseClient_OpenEVSE_Schedule);
+      } else {
+        EvseProperties p(st == 1 ? EvseState::Active : EvseState::Disabled);
+        s_mgr_ctrl->claim(EvseClient_OpenEVSE_Schedule, EvseManager_Priority_Timer, p);
+      }
+      s_lastSchedState = st;
     }
   }
 
