@@ -19,6 +19,7 @@
 #include "espal_lite.h"
 #include "lite_config_store.h"
 #include "lite_charge_policy.h"
+#include "lite_override.h"
 #include <WiFi.h>
 #include "lite_openevse_compat.h"
 
@@ -26,7 +27,7 @@
 
 // Reported as OpenEVSE `firmware`/`version` so the HA integration shows a value.
 #ifndef LITE_FW_VERSION
-#define LITE_FW_VERSION "lite-3a"
+#define LITE_FW_VERSION "lite-3b"
 #endif
 
 // Manual override is defined in main_lite.cpp; reached here for /override + status.
@@ -48,6 +49,113 @@ static const unsigned long SNTP_RETRY_MS = 30000;  // re-attempt cadence while u
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
 static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest JuiceBox sold)
+
+// ---- /override (Slice 3b) volatile state (not persisted; resets on reboot) -------------
+static LiteOverrideLimits s_ovrLimits;            // limits of the active override
+static bool               s_ovrExpired  = false;  // a session limit fired -> sticky Disable
+static bool               s_ovrEnabling = false;  // override resolves to Active (charging)
+static bool               s_wasCharging = false;  // tracks the charge->idle falling edge
+
+static const char *override_state_str(EvseState s) {
+  switch (s) {
+    case EvseState::Active:   return "active";
+    case EvseState::Disabled: return "disabled";
+    default:                  return nullptr;       // None -> omit
+  }
+}
+
+// Claim a parsed override; capture its limits + enabling flag; clear the expired latch.
+static void override_apply(EvseProperties &props, const LiteOverrideLimits &lim) {
+  s_ovrLimits   = lim;
+  s_ovrExpired  = false;
+  s_ovrEnabling = (props.getState() == EvseState::Active);
+  manual.claim(props);
+}
+
+static void override_clear() {
+  s_ovrLimits   = LiteOverrideLimits();
+  s_ovrExpired  = false;
+  s_ovrEnabling = false;
+  manual.release();
+}
+
+// Parse a JSON override body into props + limits. False on JSON parse error.
+static bool override_parse(const char *body, size_t len,
+                           EvseProperties &props, LiteOverrideLimits &lim) {
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, body, len) != DeserializationError::Ok) return false;
+  if (doc.containsKey("state")) {
+    const char *s = doc["state"];
+    if      (s && !strcmp(s, "active"))   props.setState(EvseState::Active);
+    else if (s && !strcmp(s, "disabled")) props.setState(EvseState::Disabled);
+    else if (s && !strcmp(s, "clear"))    props.setState(EvseState::None);
+  }
+  if (doc.containsKey("charge_current")) props.setChargeCurrent((uint32_t)doc["charge_current"]);
+  if (doc.containsKey("max_current"))    props.setMaxCurrent((uint32_t)doc["max_current"]);
+  if (doc.containsKey("auto_release"))   props.setAutoRelease((bool)doc["auto_release"]);
+  if (doc.containsKey("energy_limit")) {
+    lim.energy_limit_wh = (uint32_t)doc["energy_limit"]; lim.has_energy = true;
+  }
+  if (doc.containsKey("time_limit")) {
+    lim.time_limit_s = (uint32_t)doc["time_limit"]; lim.has_time = true;
+  }
+  return true;
+}
+
+// Serialize the active override (or {}) into `out`.
+static void override_get_json(String &out) {
+  StaticJsonDocument<192> doc;
+  if (manual.isActive()) {
+    EvseProperties props;
+    manual.getProperties(props);
+    const char *st = override_state_str(props.getState());
+    if (st) doc["state"] = st;
+    if (props.hasChargeCurrent()) doc["charge_current"] = props.getChargeCurrent();
+    if (props.hasMaxCurrent())    doc["max_current"]    = props.getMaxCurrent();
+    doc["auto_release"] = props.isAutoRelease();
+    if (s_ovrLimits.has_energy) doc["energy_limit"] = s_ovrLimits.energy_limit_wh;
+    if (s_ovrLimits.has_time)   doc["time_limit"]   = s_ovrLimits.time_limit_s;
+    doc["expired"] = s_ovrExpired;
+  }
+  serializeJson(doc, out);
+}
+
+static void handle_override(struct mg_connection *nc, struct http_message *hm) {
+  int code = 200;
+  String body;
+
+  // Legacy bodyless convenience (same rationale as /config): ?state=active|disabled|
+  // release|clear short-circuits to a claim/release regardless of method.
+  char qstate[12];
+  if (mg_get_http_var(&hm->query_string, "state", qstate, sizeof(qstate)) > 0) {
+    if      (!strcmp(qstate, "active"))   { EvseProperties p(EvseState::Active);   LiteOverrideLimits l; override_apply(p, l); }
+    else if (!strcmp(qstate, "disabled")) { EvseProperties p(EvseState::Disabled); LiteOverrideLimits l; override_apply(p, l); }
+    else if (!strcmp(qstate, "release") || !strcmp(qstate, "clear")) { override_clear(); }
+    override_get_json(body);
+  } else if (mg_vcmp(&hm->method, "POST") == 0) {
+    EvseProperties props;
+    LiteOverrideLimits lim;
+    if (override_parse(hm->body.p, hm->body.len, props, lim)) {
+      override_apply(props, lim);
+      code = 201; body = "{\"msg\":\"Created\"}";
+    } else {
+      code = 400; body = "{\"msg\":\"Failed to parse JSON\"}";
+    }
+  } else if (mg_vcmp(&hm->method, "DELETE") == 0) {
+    override_clear();
+    body = "{\"msg\":\"Deleted\"}";
+  } else if (mg_vcmp(&hm->method, "PATCH") == 0) {
+    manual.toggle();
+    s_ovrLimits = LiteOverrideLimits(); s_ovrExpired = false;
+    EvseProperties tp; s_ovrEnabling = manual.getProperties(tp) && tp.getState() == EvseState::Active;
+    body = "{\"msg\":\"Updated\"}";
+  } else {
+    override_get_json(body);   // GET
+  }
+
+  mg_send_head(nc, code, body.length(), "Content-Type: application/json");
+  mg_printf(nc, "%s", body.c_str());
+}
 
 // Build the /status JSON in the OpenEVSE local-API shape the firstof9/openevse
 // Home Assistant integration consumes (it polls this every 60 s). Keys it reads
@@ -227,24 +335,7 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   } else if (mg_vcmp(&hm->uri, "/config") == 0) {
     handle_config(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/override") == 0) {
-    char val[12];
-    if (mg_get_http_var(&hm->query_string, "state", val, sizeof(val)) > 0) {
-      if (strcmp(val, "active") == 0) {
-        EvseProperties p(EvseState::Active);  manual.claim(p);
-      } else if (strcmp(val, "disabled") == 0) {
-        EvseProperties p(EvseState::Disabled); manual.claim(p);
-      } else if (strcmp(val, "release") == 0) {
-        manual.release();
-      }
-    }
-    String body;
-    StaticJsonDocument<96> doc;
-    doc["manual"] = manual.isActive() ? 1 : 0;
-    doc["state"]  = (int)(s_mgr_ctrl ? (int)s_mgr_ctrl->getState() : 0);
-    doc["charge_current"] = (uint32_t)(s_mgr_ctrl ? s_mgr_ctrl->getChargeCurrent() : 0);
-    serializeJson(doc, body);
-    mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
-    mg_printf(nc, "%s", body.c_str());
+    handle_override(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/") == 0) {
     const char *body = "openevse-lite";
     mg_send_head(nc, 200, strlen(body), "Content-Type: text/plain");
