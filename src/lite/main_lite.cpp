@@ -26,6 +26,7 @@ static JuiceBoxBackend s_backend(Serial);   // USART0 LOC1 (PE7=TX/PE6=RX) @ 960
 static LiteEvseManager s_manager(s_backend);
 static LiteClock        s_clock;
 static LiteEnergyTotals s_totals;
+static bool s_wasCharging = false;  // for the charge->idle accrual edge
 ManualOverride manual(s_manager);
 
 // WiFi creds: real values arrive via PLATFORMIO_BUILD_FLAGS (-D LITE_WIFI_SSID=...).
@@ -84,6 +85,17 @@ void loop()
 {
   web_server_lite_loop();
   s_backend.loop();
-  s_manager.loop();   // tick session-energy accumulator from live backend power
+  s_manager.loop();   // ticks session energy; fires its own session-complete edge
+
+  // Mirror the manager's charge->idle edge to bank the finished session's Wh into the
+  // persistent lifetime totals. Session energy freezes on stop (resets only on the next
+  // rising edge), so getSessionWattHours() still holds the completed total here.
+  bool charging = s_manager.isCharging();
+  if (s_wasCharging && !charging) {
+    energy_totals_add(s_totals, s_manager.getSessionWattHours(),
+                      s_clock.nowLocal(millis()), s_clock.valid());
+    lite_config_save_totals(s_totals);
+  }
+  s_wasCharging = charging;
 }
 #endif
