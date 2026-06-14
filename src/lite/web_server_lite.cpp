@@ -11,6 +11,8 @@
 // mongoose code that actually wants the bare socket names.
 #include "lite_evse_backend.h"  // ArduinoJson before mongoose — see above
 #include "lite_evse_manager.h"
+#include "lite_clock.h"
+#include "lite_energy_totals.h"
 #include "manual.h"
 #include "web_server_lite.h"
 #include "espal_lite.h"
@@ -35,6 +37,12 @@ static struct mg_mgr s_mgr;
 // Live LiteEvseManager handle stashed at begin() (the handler is a C-style callback
 // and cannot capture, so a static pointer is how it reaches device state).
 static LiteEvseManager *s_mgr_ctrl = NULL;
+
+static LiteClock        *s_clock  = nullptr;
+static LiteEnergyTotals *s_totals = nullptr;
+static String            s_sntpHost = "pool.ntp.org";
+static unsigned long     s_lastSntpAttemptMs = 0;
+static const unsigned long SNTP_RETRY_MS = 30000;  // re-attempt cadence while unsynced/resync-due
 
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
@@ -161,6 +169,15 @@ static void handle_config(struct mg_connection *nc, struct http_message *hm)
   mg_printf(nc, "%s", body.c_str());
 }
 
+// Mongoose SNTP callback: a reply carries unix time as a double in mg_sntp_message.time.
+static void sntp_ev_handler(struct mg_connection *nc, int ev, void *p, void *user_data) {
+  (void)nc; (void)user_data;
+  if (ev == MG_SNTP_REPLY && s_clock) {
+    struct mg_sntp_message *m = (struct mg_sntp_message *)p;
+    s_clock->setEpoch((uint32_t)m->time, millis());
+  }
+}
+
 // MG_ENABLE_CALLBACK_USERDATA=1 (default in this mongoose build), so handlers
 // take a 4th void* user_data argument.
 static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_data)
@@ -211,9 +228,16 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   nc->flags |= MG_F_SEND_AND_CLOSE;
 }
 
-void web_server_lite_begin(LiteEvseManager &mgr)
+void web_server_lite_begin(LiteEvseManager &mgr, LiteClock &clock, LiteEnergyTotals &totals)
 {
   s_mgr_ctrl = &mgr;
+  s_clock    = &clock;
+  s_totals   = &totals;
+
+  LiteClockConfig cc;
+  lite_config_load_clock(cc);
+  s_sntpHost = cc.sntp_hostname;
+  clock.setTzOffsetMinutes(cc.tz_offset_min);
 
   // Load persisted config (or keep the 32/32 defaults), clamp, seed the manager target.
   if (!lite_config_load_evse(s_cfg)) {
@@ -244,6 +268,13 @@ static const double LITE_CONN_IDLE_SECS = 10.0;
 void web_server_lite_loop()
 {
   mg_mgr_poll(&s_mgr, 0);
+
+  unsigned long nowMs = millis();
+  if (s_clock && s_clock->resyncDue(nowMs) &&
+      (nowMs - s_lastSntpAttemptMs) >= SNTP_RETRY_MS) {
+    s_lastSntpAttemptMs = nowMs;
+    mg_sntp_get_time(&s_mgr, sntp_ev_handler, s_sntpHost.c_str(), NULL);
+  }
 
   double now = mg_time();
   struct mg_connection *c, *tmp;
