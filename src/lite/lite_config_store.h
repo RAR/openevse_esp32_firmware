@@ -46,6 +46,17 @@ struct LiteDivertConfig {
 bool lite_config_load_divert(LiteDivertConfig &out);  // false if key absent (caller uses defaults)
 bool lite_config_save_divert(const LiteDivertConfig &in);
 
+// Load-shaper config. Persisted as a single FlashDB blob ("shaper").
+struct LiteShaperConfig {
+  bool     enabled;            // current_shaper_enabled (se)
+  uint32_t max_pwr_w;          // current_shaper_max_pwr (smp)
+  uint32_t smoothing_s;        // current_shaper_smoothing_time (sst)
+  uint32_t data_maxinterval_s; // current_shaper_data_maxinterval (sdm)
+  uint32_t min_pause_s;        // current_shaper_min_pause_time (spt)
+};
+bool lite_config_load_shaper(LiteShaperConfig &out);
+bool lite_config_save_shaper(const LiteShaperConfig &in);
+
 bool lite_config_load_clock(LiteClockConfig &out);     // fills defaults if keys absent
 bool lite_config_save_clock(const LiteClockConfig &in);
 #endif

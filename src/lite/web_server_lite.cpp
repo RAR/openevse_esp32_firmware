@@ -65,6 +65,9 @@ static LiteEvseConfig s_cfg = { 32, 32 }; // {soft, hard} defaults (smallest Jui
 // Solar-divert config cached in RAM. Seeded at begin() from the store (or upstream defaults).
 static LiteDivertConfig s_divertCfg = { false, 0, 1.1, 20, 600, 600 }; // upstream defaults
 
+// Load-shaper config cached in RAM. Seeded at begin() from the store (or upstream defaults).
+static LiteShaperConfig s_shaperCfg = { false, 0, 60, 120, 300 }; // upstream defaults
+
 // Pushed sensor feed (3c POST /status). Read by the divert/shaper glue below.
 static LiteFeed s_feed;
 
@@ -390,7 +393,7 @@ static void build_status_json(String &out)
 // Serialize the cached config as the canonical /config response body.
 static void config_json(String &out)
 {
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<384> doc;
   doc["max_current_soft"] = s_cfg.max_current_soft;
   doc["max_current_hard"] = s_cfg.max_current_hard;
   doc["divert_enabled"]               = s_divertCfg.enabled;
@@ -399,6 +402,11 @@ static void config_json(String &out)
   doc["divert_attack_smoothing_time"] = s_divertCfg.attack_s;
   doc["divert_decay_smoothing_time"]  = s_divertCfg.decay_s;
   doc["divert_min_charge_time"]       = s_divertCfg.min_charge_s;
+  doc["current_shaper_enabled"]          = s_shaperCfg.enabled;
+  doc["current_shaper_max_pwr"]          = s_shaperCfg.max_pwr_w;
+  doc["current_shaper_smoothing_time"]   = s_shaperCfg.smoothing_s;
+  doc["current_shaper_data_maxinterval"] = s_shaperCfg.data_maxinterval_s;
+  doc["current_shaper_min_pause_time"]   = s_shaperCfg.min_pause_s;
   serializeJson(doc, out);
 }
 
@@ -448,6 +456,16 @@ static void handle_config(struct mg_connection *nc, struct http_message *hm)
     if (mg_get_http_var(&hm->query_string, "divert_min_charge_time", fv, sizeof(fv)) > 0)        { dcfg.min_charge_s = (uint32_t)atol(fv); dany = true; }
   }
   if (dany) { lite_config_save_divert(dcfg); s_divertCfg = dcfg; }
+
+  LiteShaperConfig scfg = s_shaperCfg; bool sany = false;
+  if (mg_get_http_var(&hm->query_string, "current_shaper_enabled", val, sizeof(val)) > 0) { scfg.enabled = atoi(val) != 0; sany = true; }
+  { char fv[16];
+    if (mg_get_http_var(&hm->query_string, "current_shaper_max_pwr", fv, sizeof(fv)) > 0)          { scfg.max_pwr_w = (uint32_t)atol(fv); sany = true; }
+    if (mg_get_http_var(&hm->query_string, "current_shaper_smoothing_time", fv, sizeof(fv)) > 0)   { scfg.smoothing_s = (uint32_t)atol(fv); sany = true; }
+    if (mg_get_http_var(&hm->query_string, "current_shaper_data_maxinterval", fv, sizeof(fv)) > 0) { scfg.data_maxinterval_s = (uint32_t)atol(fv); sany = true; }
+    if (mg_get_http_var(&hm->query_string, "current_shaper_min_pause_time", fv, sizeof(fv)) > 0)   { scfg.min_pause_s = (uint32_t)atol(fv); sany = true; }
+  }
+  if (sany) { lite_config_save_shaper(scfg); s_shaperCfg = scfg; }
 
   int status = 200;
   if (any) {
@@ -586,6 +604,7 @@ void web_server_lite_begin(LiteEvseManager &mgr, LiteClock &clock, LiteEnergyTot
   mgr.setTargetChargeCurrent((uint32_t)s_cfg.max_current_soft);
 
   lite_config_load_divert(s_divertCfg);   // keeps defaults if the key is absent
+  lite_config_load_shaper(s_shaperCfg);  // keeps defaults if the key is absent
 
   mg_mgr_init(&s_mgr, NULL);
   // mg_bind takes (mgr, addr, handler, user_data) when MG_ENABLE_CALLBACK_USERDATA=1.
