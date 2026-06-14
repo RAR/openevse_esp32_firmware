@@ -20,6 +20,7 @@
 #include "lite_config_store.h"
 #include "lite_charge_policy.h"
 #include "lite_override.h"
+#include "lite_schedule.h"
 #include <WiFi.h>
 #include "lite_openevse_compat.h"
 
@@ -55,6 +56,117 @@ static LiteOverrideLimits s_ovrLimits;            // limits of the active overri
 static bool               s_ovrExpired  = false;  // a session limit fired -> sticky Disable
 static bool               s_ovrEnabling = false;  // override resolves to Active (charging)
 static bool               s_wasCharging = false;  // tracks the charge->idle falling edge
+
+// ---- /schedule (Slice 4) -------------------------------------------------------------
+static LiteSchedule s_schedule;            // persisted weekly schedule
+static uint32_t     s_scheduleVersion = 0; // bumped on every mutation (exposed in /status)
+static uint8_t      s_lastSchedState  = 0; // last schedule-resolved state applied (0/1/2)
+
+static uint8_t sched_state_from_str(const char *s) {
+  if (s && !strcmp(s, "active"))   return 1;
+  if (s && !strcmp(s, "disabled")) return 2;
+  return 0;
+}
+static const char *sched_state_str(uint8_t st) { return st == 1 ? "active" : "disabled"; }
+
+// Serialize the whole schedule as a JSON array of {id,state,time,days}.
+static void schedule_get_json(String &out) {
+  // 16 events x {id,state,time,days[<=7]} -> ~2.1 KB worst case; size generously.
+  StaticJsonDocument<2560> doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (uint32_t i = 0; i < s_schedule.count && i < LITE_SCHEDULE_MAX_EVENTS; i++) {
+    const LiteScheduleEvent &e = s_schedule.events[i];
+    JsonObject o = arr.createNestedObject();
+    o["id"] = e.id;
+    o["state"] = sched_state_str(e.state);
+    char tb[12]; lite_schedule_format_time(e.sec_of_day, tb, sizeof(tb));
+    o["time"] = tb;
+    JsonArray days = o.createNestedArray("days");
+    for (int d = 0; d < 7; d++) if (e.day_mask & (1u << d)) days.add(lite_schedule_day_name(d));
+  }
+  serializeJson(doc, out);
+}
+
+// Parse one event from a JSON body. Returns false (and leaves *code) on validation error.
+static bool schedule_parse(const char *body, size_t len, LiteScheduleEvent &e, int &code) {
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, body, len) != DeserializationError::Ok) { code = 400; return false; }
+  if (!doc.containsKey("state") || !doc.containsKey("time") || !doc.containsKey("days")) {
+    code = 400; return false;
+  }
+  memset(&e, 0, sizeof(e));
+  uint8_t st = sched_state_from_str(doc["state"]);
+  if (st == 0) { code = 400; return false; }
+  e.state = st;
+  uint32_t sod;
+  if (!lite_schedule_parse_time(doc["time"], sod)) { code = 400; return false; }
+  e.sec_of_day = sod;
+  uint8_t mask = 0;
+  for (JsonVariant v : doc["days"].as<JsonArray>()) {
+    int di = lite_schedule_day_index(v.as<const char *>());
+    if (di < 0) { code = 400; return false; }
+    mask |= (uint8_t)(1u << di);
+  }
+  if (mask == 0) { code = 400; return false; }
+  e.day_mask = mask;
+  // id: client-provided, else auto-assign max+1 (1 when empty).
+  if (doc.containsKey("id") && (uint32_t)doc["id"] != 0) {
+    e.id = (uint32_t)doc["id"];
+  } else {
+    uint32_t mx = 0;
+    for (uint32_t i = 0; i < s_schedule.count && i < LITE_SCHEDULE_MAX_EVENTS; i++)
+      if (s_schedule.events[i].id > mx) mx = s_schedule.events[i].id;
+    e.id = mx + 1;
+  }
+  return true;
+}
+
+// Parse a trailing /schedule/<id> id from the URI (0 if none).
+static uint32_t schedule_id_from_uri(struct http_message *hm) {
+  const char *pfx = "/schedule/";
+  size_t pl = strlen(pfx);
+  if (hm->uri.len > pl && memcmp(hm->uri.p, pfx, pl) == 0) {
+    return (uint32_t)strtoul(hm->uri.p + pl, NULL, 10);
+  }
+  char idbuf[12];
+  if (mg_get_http_var(&hm->query_string, "id", idbuf, sizeof(idbuf)) > 0)
+    return (uint32_t)strtoul(idbuf, NULL, 10);
+  return 0;
+}
+
+static void handle_schedule(struct mg_connection *nc, struct http_message *hm) {
+  int code = 200;
+  String body;
+  if (mg_vcmp(&hm->method, "POST") == 0) {
+    LiteScheduleEvent e;
+    if (schedule_parse(hm->body.p, hm->body.len, e, code)) {
+      if (lite_schedule_upsert(s_schedule, e)) {
+        bool saved = lite_config_save_schedule(s_schedule);
+        s_scheduleVersion++;
+        code = saved ? 201 : 503;
+        StaticJsonDocument<64> r; r["id"] = e.id;
+        serializeJson(r, body);
+      } else {
+        code = 507; body = "{\"msg\":\"Schedule full\"}";
+      }
+    } else {
+      body = "{\"msg\":\"Bad schedule event\"}";
+    }
+  } else if (mg_vcmp(&hm->method, "DELETE") == 0) {
+    uint32_t id = schedule_id_from_uri(hm);
+    if (id != 0 && lite_schedule_remove(s_schedule, id)) {
+      lite_config_save_schedule(s_schedule);
+      s_scheduleVersion++;
+      body = "{\"msg\":\"Deleted\"}";
+    } else {
+      code = 404; body = "{\"msg\":\"Not found\"}";
+    }
+  } else {
+    schedule_get_json(body);   // GET
+  }
+  mg_send_head(nc, code, body.length(), "Content-Type: application/json");
+  mg_printf(nc, "%s", body.c_str());
+}
 
 static const char *override_state_str(EvseState s) {
   switch (s) {
@@ -219,6 +331,7 @@ static void build_status_json(String &out)
   doc["free_heap"] = ESPAL.getFreeHeap();
   doc["freeram"]   = ESPAL.getFreeHeap();
   doc["uptime"]    = (uint32_t)(millis() / 1000);
+  doc["schedule_version"] = s_scheduleVersion;
 
   if (s_clock && s_clock->valid()) {
     char isobuf[24];
@@ -336,6 +449,9 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
     handle_config(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/override") == 0) {
     handle_override(nc, hm);
+  } else if ((hm->uri.len == 9  && memcmp(hm->uri.p, "/schedule", 9)  == 0) ||
+             (hm->uri.len > 10 && memcmp(hm->uri.p, "/schedule/", 10) == 0)) {
+    handle_schedule(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/") == 0) {
     const char *body = "openevse-lite";
     mg_send_head(nc, 200, strlen(body), "Content-Type: text/plain");
@@ -359,6 +475,10 @@ void web_server_lite_begin(LiteEvseManager &mgr, LiteClock &clock, LiteEnergyTot
   lite_config_load_clock(cc);
   s_sntpHost = cc.sntp_hostname;
   clock.setTzOffsetMinutes(cc.tz_offset_min);
+
+  if (!lite_config_load_schedule(s_schedule)) {
+    memset(&s_schedule, 0, sizeof(s_schedule));
+  }
 
   // Load persisted config (or keep the 32/32 defaults), clamp, seed the manager target.
   if (!lite_config_load_evse(s_cfg)) {
