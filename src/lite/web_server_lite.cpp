@@ -27,6 +27,8 @@
 #include "lite_feed.h"
 #include "lite_divert.h"
 #include "lite_shaper.h"
+#include "lite_provision.h"
+#include "web_ui_lite.h"
 
 #include "mongoose.h"
 
@@ -44,6 +46,17 @@ static struct mg_mgr s_mgr;
 // Live LiteEvseManager handle stashed at begin() (the handler is a C-style callback
 // and cannot capture, so a static pointer is how it reaches device state).
 static LiteEvseManager *s_mgr_ctrl = NULL;
+
+// Provisioning serving mode (set by the boot glue): selects which bundle GET /
+// returns, and whether main_lite's loop drives the D3 STA-retry. Deferred-reboot
+// state is queued by /connect and fired from web_server_lite_loop() after the
+// HTTP response has flushed (never inside the handler before the socket drains).
+static bool     s_apMode        = false;
+static bool     s_rebootPending = false;
+static uint32_t s_rebootAtMs    = 0;
+
+void web_server_lite_set_ap_mode(bool ap) { s_apMode = ap; }
+bool web_server_lite_in_ap_mode(void)     { return s_apMode; }
 
 static LiteClock        *s_clock  = nullptr;
 static LiteEnergyTotals *s_totals = nullptr;
@@ -531,6 +544,61 @@ static int ws_broadcast_status()
   return n;
 }
 
+// GET /scan — synchronous WiFi scan -> JSON array [{ssid,rssi,enc}]. JSON built
+// here with ArduinoJson (correct escaping of arbitrary SSIDs). Hidden APs (empty
+// SSID) omitted; raw list (GUI dedupes). scanNetworks() returns synchronously
+// (sem-waited) so scanDelete() afterward is safe per the WiFiScan.cpp UAF note.
+static void handle_scan(struct mg_connection *nc)
+{
+  int16_t n = WiFi.scanNetworks();        // blocking; count, or <0 on error
+  StaticJsonDocument<1024> doc;
+  JsonArray arr = doc.to<JsonArray>();
+  for (int i = 0; i < n && i < 32; i++) {
+    String ssid = WiFi.SSID((uint8_t)i);
+    if (ssid.length() == 0) continue;     // omit hidden
+    JsonObject o = arr.createNestedObject();
+    o["ssid"] = ssid;
+    o["rssi"] = WiFi.RSSI((uint8_t)i);
+    o["enc"]  = lite_provision_enc((int)WiFi.encryptionType((uint8_t)i));
+  }
+  WiFi.scanDelete();                      // safe: sync scan already completed
+  String body; serializeJson(doc, body);
+  mg_send_head(nc, 200, body.length(), "Content-Type: application/json");
+  mg_printf(nc, "%s", body.c_str());
+}
+
+// GET /connect?ssid=<urlenc>&pass=<urlenc> — save creds then schedule a reboot.
+// mg_get_http_var() already URL-decodes (mongoose.c: it calls mg_url_decode), so
+// we store its output directly — no second lite_url_decode pass (that would
+// double-decode legitimate %/+ in a passphrase). pass may be absent (open net).
+static void handle_connect(struct mg_connection *nc, struct http_message *hm)
+{
+  char ssid[64], pass[128];
+  int sl = mg_get_http_var(&hm->query_string, "ssid", ssid, sizeof(ssid));
+  int pl = mg_get_http_var(&hm->query_string, "pass", pass, sizeof(pass));
+  if (sl <= 0) {
+    const char *e = "{\"msg\":\"ssid required\"}";
+    mg_send_head(nc, 400, strlen(e), "Content-Type: application/json");
+    mg_printf(nc, "%s", e);
+    return;
+  }
+  LiteWifiConfig c;
+  c.ssid = ssid;
+  if (pl > 0) c.pass = pass;
+  if (!lite_config_save_wifi(c)) {
+    const char *e = "{\"msg\":\"save failed\"}";
+    mg_send_head(nc, 500, strlen(e), "Content-Type: application/json");
+    mg_printf(nc, "%s", e);
+    return;
+  }
+  const char *ok = "{\"msg\":\"OK\"}";
+  mg_send_head(nc, 200, strlen(ok), "Content-Type: application/json");
+  mg_printf(nc, "%s", ok);
+  // Reboot from the loop after the response flushes — not here, before drain.
+  s_rebootPending = true;
+  s_rebootAtMs    = millis() + 750;
+}
+
 // MG_ENABLE_CALLBACK_USERDATA=1 (default in this mongoose build), so handlers
 // take a 4th void* user_data argument.
 static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_data)
@@ -573,10 +641,17 @@ static void ev_handler(struct mg_connection *nc, int ev, void *p, void *user_dat
   } else if ((hm->uri.len == 9  && memcmp(hm->uri.p, "/schedule", 9)  == 0) ||
              (hm->uri.len > 10 && memcmp(hm->uri.p, "/schedule/", 10) == 0)) {
     handle_schedule(nc, hm);
+  } else if (mg_vcmp(&hm->uri, "/scan") == 0) {
+    handle_scan(nc);
+  } else if (mg_vcmp(&hm->uri, "/connect") == 0) {
+    handle_connect(nc, hm);
   } else if (mg_vcmp(&hm->uri, "/") == 0) {
-    const char *body = "openevse-lite";
-    mg_send_head(nc, 200, strlen(body), "Content-Type: text/plain");
-    mg_printf(nc, "%s", body);
+    // Serve the gzipped bundle for the current mode. mg_send (binary-safe) — NOT
+    // mg_printf — because gzip data contains NUL bytes that "%s" would truncate.
+    const uint8_t *body = s_apMode ? SETUP_HTML_GZ : INDEX_HTML_GZ;
+    unsigned len        = s_apMode ? SETUP_HTML_GZ_LEN : INDEX_HTML_GZ_LEN;
+    mg_send_head(nc, 200, len, "Content-Type: text/html\r\nContent-Encoding: gzip");
+    mg_send(nc, body, (int)len);
   } else {
     const char *body = "not found";
     mg_send_head(nc, 404, strlen(body), "Content-Type: text/plain");
@@ -633,6 +708,12 @@ static const double LITE_CONN_IDLE_SECS = 10.0;
 void web_server_lite_loop()
 {
   mg_mgr_poll(&s_mgr, 0);
+
+  // Deferred post-/connect reboot: fires once the queued instant has passed, so
+  // the {"msg":"OK"} response has been polled out before the radio resets.
+  if (s_rebootPending && (int32_t)(millis() - s_rebootAtMs) >= 0) {
+    ESPAL.reset();
+  }
 
   // Slice 3b: enforce override session limits + auto-release. Pure decision in
   // lite_override_evaluate; this is the thin wiring to the manager seam.
