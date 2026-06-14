@@ -26,6 +26,7 @@
 #include "lite_openevse_compat.h"
 #include "lite_feed.h"
 #include "lite_divert.h"
+#include "lite_shaper.h"
 
 #include "mongoose.h"
 
@@ -57,6 +58,12 @@ static uint32_t        s_divertLastMs = 0;          // for smoothing delta_s
 static uint32_t        s_divertMinChargeEndMs = 0;  // millis when min-charge window ends (0 = disarmed)
 static bool            s_divertWasCharging = false;
 static const uint32_t  FEED_STALE_MS = 120000;      // feed staleness window (fail-safe pause)
+
+static LiteShaperState s_shaperState = { 0.0, false };
+static uint32_t        s_shaperLastMs   = 0;  // smoothing delta_s
+static uint32_t        s_shaperPauseMs  = 0;  // millis when current pause began (0 = not paused)
+static const double    LITE_SHAPER_HYSTERESIS = 0.5; // A
+static const int       LITE_MIN_CURRENT = 6;         // J1772 floor
 
 // Active EVSE config cached in RAM so /status and GET /config never touch flash.
 // Seeded at web_server_lite_begin() from the store (or defaults) and updated on POST.
@@ -670,6 +677,51 @@ void web_server_lite_loop()
       }
       s_lastSchedState = st;
     }
+  }
+
+  // Load-shaper: cap total current to the site-power budget via a MaxCurrent claim at
+  // Safety (caps every client incl. manual). Pauses (Disabled@Limit) when the cap drops
+  // below the min current or the shaper feed goes stale. Pure cap in lite_shaper_cap.
+  if (s_mgr_ctrl && s_shaperCfg.enabled) {
+    uint32_t now = millis();
+    uint32_t delta_s = s_shaperLastMs ? (now - s_shaperLastMs) / 1000u : 0u;
+    s_shaperLastMs = now;
+
+    bool fresh = lite_feed_fresh(s_feed.shaper_valid, s_feed.shaper_ms, now,
+                                 s_shaperCfg.data_maxinterval_s * 1000u);
+    double volts = (s_feed.voltage_valid && s_feed.voltage > 1.0) ? s_feed.voltage : 240.0;
+
+    if (!fresh) {
+      // Stale feed -> pause charge (Disabled@Limit), arm pause timer, freeze smoothing.
+      if (!s_shaperPauseMs) s_shaperPauseMs = now;
+      s_shaperState.paused = true;
+      if (s_mgr_ctrl->getState(EvseClient_OpenEVSE_Shaper) != EvseState::Disabled) {
+        EvseProperties p(EvseState::Disabled);
+        s_mgr_ctrl->claim(EvseClient_OpenEVSE_Shaper, EvseManager_Priority_Limit, p);
+      }
+    } else {
+      int present_a = (int)s_mgr_ctrl->getChargeCurrent();
+      double cap = lite_shaper_cap({ s_shaperCfg.max_pwr_w, s_shaperCfg.smoothing_s },
+                                   s_shaperState, s_feed.shaper_w, volts, present_a,
+                                   s_feed.solar_w, s_divertCfg.enabled && s_divertCfg.type == 0,
+                                   delta_s);
+      EvseProperties p;
+      p.setMaxCurrent((uint32_t)(cap < 0 ? 0 : (uint32_t)cap));
+      if (cap < LITE_MIN_CURRENT) {
+        p.setState(EvseState::Disabled);            // not enough headroom -> pause
+        if (!s_shaperPauseMs) s_shaperPauseMs = now;
+        s_shaperState.paused = true;
+      } else if (s_shaperPauseMs &&
+                 (now - s_shaperPauseMs) >= s_shaperCfg.min_pause_s * 1000u &&
+                 (cap - LITE_MIN_CURRENT) >= LITE_SHAPER_HYSTERESIS) {
+        s_shaperPauseMs = 0;                        // resume after min-pause + hysteresis
+        s_shaperState.paused = false;
+      }
+      s_mgr_ctrl->claim(EvseClient_OpenEVSE_Shaper, EvseManager_Priority_Safety, p);
+    }
+  } else if (s_mgr_ctrl && s_mgr_ctrl->clientHasClaim(EvseClient_OpenEVSE_Shaper)) {
+    s_mgr_ctrl->release(EvseClient_OpenEVSE_Shaper);
+    s_shaperState.smoothed_live_pwr = 0; s_shaperPauseMs = 0; s_shaperState.paused = false;
   }
 
   // Solar-divert (autonomous, OpenEVSE-priority). Claims Active@Divert(50) when excess
