@@ -12,6 +12,8 @@
 #include "lite_evse_manager.h"
 #include "lite_clock.h"
 #include "lite_energy_totals.h"
+#include "lite_led.h"
+#include "WiFiStatusLed.h"   // ltWifiStatusLedEnable — WiFi lib header, on the path via <WiFi.h>
 #include "manual.h"
 
 #if defined(LITE_EVSE_BACKEND_JUICEBOX)
@@ -79,6 +81,15 @@ void setup()
   delay(50);                        // well past the AVR min reset pulse width
   GPIO_PinOutSet(gpioPortF, 11);    // release RESET — Atmel boots fresh
   delay(100);                       // brief settle; loop() catches the boot frames
+
+  // Take ownership of the RGB LED from the WiFi backend and show EVSE state instead of
+  // the WiFi bring-up ladder. ltWifiStatusLedEnable(false) makes the WiFi LED calls no-op.
+#if defined(LED_R) && defined(LED_G) && defined(LED_B)
+  ltWifiStatusLedEnable(false);
+  pinMode(LED_R, OUTPUT);
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_B, OUTPUT);
+#endif
 }
 
 void loop()
@@ -97,5 +108,19 @@ void loop()
     lite_config_save_totals(s_totals);
   }
   s_wasCharging = charging;
+
+  // EVSE-state RGB indicator (active-high). Pure mapping in lite_led; this is the only
+  // device-side glue. Compiled out on boards without the LED_R/G/B variant macros.
+#if defined(LED_R) && defined(LED_G) && defined(LED_B)
+  {
+    LiteLedSpec spec = lite_led_for(s_manager.getDeviceState(),
+                                    s_manager.getState() == EvseState::Disabled,
+                                    s_backend.isOnline());
+    bool on = lite_led_phase_on(spec.pattern, millis());
+    digitalWrite(LED_R, (spec.color.r && on) ? HIGH : LOW);
+    digitalWrite(LED_G, (spec.color.g && on) ? HIGH : LOW);
+    digitalWrite(LED_B, (spec.color.b && on) ? HIGH : LOW);
+  }
+#endif
 }
 #endif
