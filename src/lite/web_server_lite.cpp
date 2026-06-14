@@ -742,7 +742,7 @@ void web_server_lite_loop()
 
     bool active    = (s_mgr_ctrl->getState(EvseClient_OpenEVSE_Divert) == EvseState::Active);
     bool charging  = s_mgr_ctrl->isCharging();
-    int  present_a = (int)s_mgr_ctrl->getChargeCurrent();   // last resolved current (getAmps proxy)
+    int  present_a = fresh ? (int)s_mgr_ctrl->getChargeCurrent() : 0;  // getAmps proxy; 0 on stale feed so GRID winds down (fail-safe)
     // "min-charge elapsed" (Stop permitted) when the car isn't actually charging OR the timer
     // expired — mirrors upstream getMinChargeTimeRemaining()==0 on (!isCharging() || timer done).
     bool min_elapsed = !charging
