@@ -34,7 +34,8 @@ Power Sharing, go-e); it is a frequently requested OpenEVSE feature.
 - SoC-aware allocation (layers on later as a priority tiebreaker; the box already sees
   `battery_level` in charger status).
 - Charger-hosted or HA-hosted primary implementations (protocol permits them; not built).
-- Cheap ESP32-S3 box hardware (the box firmware is display-abstracted; S3 is a later port).
+- Porting the box to cheap ESP32-S3 panel hardware — v1 ships on the ESP32-P4 (§7); the
+  box firmware stays display-abstracted so an S3 port is possible later.
 - Per-phase / 3-phase budget modelling. Budget and leases are single-value amps.
 
 ## 2. Decisions (with alternatives considered)
