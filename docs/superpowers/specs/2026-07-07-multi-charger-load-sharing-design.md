@@ -88,6 +88,31 @@ An islanded current > 0 (e.g. 6 A) is an explicit availability-vs-fail-dark trad
 user can opt into per charger (garage WiFi flakiness should not mean the car is empty at
 7am); the safety rule bounds the worst case.
 
+### Composition with the Charge Manager (upstream PR #1112, open)
+
+PR #1112 gives scheduler timer windows per-event **features** (Divert, Shaper, RFID,
+Current = amps, OCPP placeholder) and **session limits** (Time / Energy / SoC / Cost),
+activating timer-controlled divert/shaper claims at Limit-class priority **1100** (the
+standalone shaper keeps Safety 5000). The lease is designed to sit cleanly on top:
+
+- The lease claims **`max_current`** (plus `state` for pause) at a priority strictly
+  above Safety 5000 — above both the standalone shaper and every #1112 window claim.
+  Because `max_current` composes as a *ceiling* on whatever charge current wins below
+  it, schedules keep deciding **when** and **intent** while the lease bounds **how
+  much**: a scheduled 32 A "Current" window under a 16 A lease charges at 16 A; an eco
+  window under that lease tracks surplus below 16 A.
+- While managed, a window whose feature is **Shaper** is inert (redundant — the lease is
+  the shaped limit), and a **Divert** window maps to `mode_request(eco)` for the window's
+  duration (house-level eco pool replaces local divert), reverting after. Existing
+  schedules keep their meaning without running a second controller.
+- **Session limits** (Time/Energy/SoC) and **RFID-required** windows remain fully local
+  and orthogonal: a lease caps amps; a limit ends a session.
+- #1112's `setSolar()/setGridIe()` injection points on divert confirm the upstream
+  data-push surface the `data` message reuses.
+- Practically: PR B (§9) is developed to apply on top of #1112 (it likely merges first),
+  and #1112's pytest integration harness (`tests/integration/`) is the natural home for
+  the protocol soak tests driving FakeEVSE instances.
+
 ## 4. Managed-mode module (charger side)
 
 **Config** (config store keys, all persisted):
@@ -99,8 +124,10 @@ user can opt into per charger (garage WiFi flakiness should not mean the car is 
 
 **Behavior:**
 
-- On enable/boot: claim `islanded_current` immediately (Safety-class priority, above the
-  shaper's 5000 so nothing user-level can outbid it), then connect and reconcile.
+- On enable/boot: claim `max_current = islanded_current` immediately, at a priority
+  strictly above Safety 5000 (and therefore above #1112's timer-window claims at 1100),
+  so no schedule, shaper, divert, or manual override can outbid it; then connect and
+  reconcile.
 - Lease handling: apply granted amps to the claim; a lease of 0 A presents as a distinct
   **"waiting for load manager"** paused state on the web UI and LCD (LVGL charge/standby
   screens gain a status line) — visibly different from a fault or manual stop.
@@ -236,7 +263,9 @@ re-derived every heartbeat from current inputs — the allocator is a pure funct
    before significant code.
 2. **PR A — claim-TTL primitive** (§4): tiny, standalone, independently useful.
 3. **PR B — managed mode + WS client + lease protocol**: gated `ENABLE_MANAGED_MODE`,
-   built against upstream master.
+   built against upstream master and structured to apply cleanly on top of PR #1112
+   (charge manager) — see §3's composition rules. If #1112 merges first, PR B rebases
+   onto it and extends its `tests/integration/` harness.
 4. **Fork-side in parallel:** `openevse_lm` box env, allocator, screens — the allocator
    module written portable so a charger-hosted primary is possible later.
 
