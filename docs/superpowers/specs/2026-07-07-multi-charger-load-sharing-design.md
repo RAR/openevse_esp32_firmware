@@ -1,298 +1,236 @@
 # Multi-Charger Household Load Sharing — Design
 
-**Date:** 2026-07-07
+**Date:** 2026-07-07 (reworked same day after discovering upstream's in-progress work)
 **Status:** Approved design, pre-implementation
-**Scope:** Lease-based load sharing for households with 2+ OpenEVSE chargers, coordinated
-by a dedicated in-home "Load Manager" device (ESP32-P4 + touchscreen), with the protocol
-designed primary-agnostic so the coordinator could later be hosted elsewhere (a charger,
-HA, etc.) without protocol changes.
+**Scope:** Load sharing for households with 2+ OpenEVSE chargers. **Strategy: adopt and
+extend upstream's in-progress load-sharing implementation** (issue #940, branch
+`jeremypoulter/issue940`) rather than propose a competing protocol. Our contributions:
+a dedicated in-home "Load Manager" box (ESP32-P4 + touchscreen) running the controller
+role without an attached EVSE, priority + rotation allocation, solar/eco awareness, and
+claim-priority hardening.
 
 ---
 
-## 1. Problem and goals
+## 1. Problem and context
 
 Households with two or more EVSEs share one panel/feeder limit. Today each OpenEVSE can
-shape its own current (current shaper, solar divert), but two independent controllers
-reacting to the same CT race and oscillate, and nothing enforces a *combined* ceiling.
-Commercial systems solve this with leader/follower groups (Tesla Wall Connector, Wallbox
-Power Sharing, go-e); it is a frequently requested OpenEVSE feature.
+shape its own current, but two independent controllers reacting to the same CT race and
+oscillate, and nothing enforces a *combined* ceiling. Commercial systems solve this with
+leader/follower groups (Tesla Wall Connector, Wallbox Power Sharing, go-e).
 
-**Goals**
+**Upstream is already building this.** Issue #940 "Local power sharing group" (an
+expansion of #592, motivated by the Enel X JuiceBox shutdown) has an active
+implementation branch by Jeremy Poulter: `jeremypoulter/issue940` (~4,100 lines:
+`loadsharing_types/algorithm/discovery_task/peer_poller`, web API, GUI branch, plus the
+integration-test and divert_sim groundwork split out as PRs #1124/#1125). We
+independently converged with it on the fundamentals — WebSocket status transport,
+member-side failsafe current on lost comms, offline-member budget reservation,
+claims-based enforcement — which validates both designs. This spec adopts #940's
+protocol and modules as the foundation and defines our extensions on top.
 
-- Hard guarantee: combined EV draw never exceeds the household EV budget, under every
-  failure mode (reboots, WiFi partition, coordinator death), without a consensus protocol.
-- Demand shifting: an idle/full charger's share flows to the active one; a tight budget
-  time-slices fairly rather than starving one car.
-- Solar awareness: eco-mode chargers draw from exportable surplus; fast-mode chargers
-  draw from the grid budget.
-- Chargers remain fully functional standalone (no Load Manager present) — no removed
-  features, no fork from upstream behavior.
-- Charger-side changes structured for upstream PRs from day one.
+### What #940 provides (adopted as-is)
 
-**Non-goals (v1)**
+- **Roles:** `loadsharing_role` = controller | member, configured per charger. Members
+  know the controller via `loadsharing_controller_host`; the controller finds members
+  via mDNS discovery (`loadsharing_discovery_task`) and/or a configured peer list.
+- **Transport:** the controller dials out to each member's *existing* `/ws` GUI
+  WebSocket for real-time status ingestion (HTTP bootstrap first), pushes group config
+  to members via `POST /config` (kept in sync via `loadsharing_config_version` +
+  config hash), and delivers per-member `target_current` allocations. Poller task wakes
+  every 500 ms; WS staleness and heartbeat timeouts mark peers offline.
+- **Member failsafe (= our "islanded current"):** a member that loses contact with its
+  controller past `loadsharing_heartbeat_timeout` (default 30 s) falls back to
+  `loadsharing_failsafe_safe_current` (default 6 A); `loadsharing_failsafe_mode` can be
+  `safe_current` or `disable` (0 A). Timeouts are relative to local millis — no
+  wall-clock/NTP dependency.
+- **Offline reserve:** the controller subtracts `failsafe_peer_assumed_current` per
+  offline member from the group budget before allocating — the conservative accounting
+  our design also required (Σ of what unreachable chargers may legitimately draw).
+- **Allocation:** `computeAllocations()` is a pure function — "equal share with
+  minimums": budget × safety factor − offline reserve, minimums first, remainder split
+  equally with iterative max-capping; when minimums don't fit, a deterministic subset
+  (sorted by member id) charges and the rest get 0.
+- **Enforcement:** allocations applied via EvseManager claims
+  (`EvseClient_OpenEVSE_LoadSharing`).
 
-- SoC-aware allocation (layers on later as a priority tiebreaker; the box already sees
-  `battery_level` in charger status).
-- Charger-hosted or HA-hosted primary implementations (protocol permits them; not built).
-- Porting the box to cheap ESP32-S3 panel hardware — v1 ships on the ESP32-P4 (§7); the
-  box firmware stays display-abstracted so an S3 port is possible later.
-- Per-phase / 3-phase budget modelling. Budget and leases are single-value amps.
+## 2. Our extensions (the actual work)
 
-## 2. Decisions (with alternatives considered)
+| # | Extension | Why |
+|---|---|---|
+| E1 | **Load Manager box** — `openevse_lm` PlatformIO env: the #940 controller role on a Guition ESP32-P4 + 4.3" touchscreen, with no attached EVSE | A charger-free primary that lives in the house; screen shows household state; symmetric charger fleet (all members) |
+| E2 | **Priority + rotation allocator** | #940's scarcity behavior starves deterministically (same id wins every time). Use the existing-but-unused `loadsharing_priority` config key, and rotate equal-priority starving members on an interval so both cars charge overnight |
+| E3 | **Solar/eco pools** | Fast pool shares the grid budget; eco pool shares exportable solar surplus. House-level divert replaces N independent divert controllers |
+| E4 | **Claim-priority hardening** | #940 claims at Limit (1100): a manual override or the shaper (Safety 5000) can outbid the group budget. The load-sharing claim must rank above anything user-settable |
+| E5 | **Mode arbitration** (eco/fast per charger, settable on charger or box, box wins) | Needed by E3; uses members' existing mode/config APIs |
+
+E1 is fork-side (upstream has no P4 target). E2 and E4 are upstream contributions onto
+the #940 branch. E3 + E5 prove out fork-side first, then offered upstream.
+
+## 3. Decisions (with alternatives considered)
 
 | Decision | Chosen | Rejected alternatives |
 |---|---|---|
-| Primary form | Protocol-first: primary-agnostic lease protocol; dedicated box is the reference (v1: only) primary | Box-only protocol; charger-hosted + box both in v1 |
-| Data ingestion | Box is the *preferred* source, distributing house-level data to chargers; chargers keep all standalone capability | Stripping MQTT/HA ingestion from chargers (breaks standalone + upstream) |
-| Budget intelligence | Full dynamic: static budget + CT headroom + solar surplus, each layer degrading gracefully | Static-only; static+CT-only |
-| Screen | LVGL touchscreen from day one | Headless v1 |
-| Mode control (eco/fast) | Settable on charger or box; box arbitrates (last-writer-wins, box wins ties) | Charger-authoritative; box-authoritative |
-| Transport | WebSocket, charger→box | HTTP polling (box-initiated); MQTT via broker |
-| Scarcity policy | Per-charger priority + rotation among equal-priority starving chargers | Static priority only; SoC-aware |
+| Relationship to #940 | Adopt protocol + modules, extend | Competing protocol (our original draft); fork-only divergence |
+| Primary form | #940 controller role, hostable on a charger *or* the box (protocol already primary-agnostic in this sense) | Box-only; new dedicated protocol |
+| Transport | #940's: controller dials member `/ws`, mDNS discovery, config-push sync | Member-dials-in WS (our original draft); MQTT; HTTP-poll-only |
+| Data ingestion | Box is the *preferred* source of house-level data (solar/grid/battery), distributing to members via the existing `POST /status` push shapes; chargers keep standalone capability | Stripping MQTT/HA ingestion from chargers |
+| Budget intelligence | Static group budget + CT headroom + solar surplus, each layer degrading downward | Static-only; static+CT-only |
+| Screen | LVGL touchscreen on the box from day one | Headless v1 |
+| Scarcity policy | Priority (existing `loadsharing_priority` key) + rotation with min-hold | #940's deterministic id-sorted subset; SoC-aware |
 | Box hardware | Guition JC4880P443C (ESP32-P4 + 4.3" ST7701 touch, already ported) | New S3 panel bring-up first |
-| Box firmware home | This repo, new PlatformIO env (FakeEVSE-style personality) | Separate repo |
-| Upstream posture | Upstream-first: discussion issue, then small PRs against upstream master for charger-side pieces; box env stays fork-side | Fork-only; modernization-branch base |
-| Fleet size | Design for N secondaries (charger list), test with 2 | Hard-coded pair |
+| Box firmware home | This repo, new env (FakeEVSE-style personality) | Separate repo |
+| Upstream posture | Engage on #940: bench-test Jeremy's branch, review feedback, contribution PRs | Discussion issue proposing a new protocol (obsoleted by #940) |
+| Fleet size | N members (#940 already models a peer list) | Hard-coded pair |
 
-## 3. Architecture
+## 4. The core invariant (unchanged, now in #940 vocabulary)
 
-Three pieces, one protocol:
+> A charger in a load-sharing group without live contact with its controller charges at
+> its **failsafe current** (`loadsharing_failsafe_safe_current`, or 0 in `disable`
+> mode), period.
 
-1. **Managed-mode module** (charger side, upstream target) — gated firmware module any
-   OpenEVSE charger can enable. Owns a WebSocket client to the box and a Safety-class
-   claim on the EVSE manager that enforces the current lease — or the configured
-   islanded current when no lease is live.
-2. **Load Manager box** (fork reference primary) — new env in this repo reusing WiFi
-   provisioning, web server, config store, MQTT/HA clients, LVGL stack, and OTA. Runs the
-   WS server, the allocator, and the status screen. No RAPI/EVSE monitor/OCPP.
-3. **Lease protocol** — charger-initiated WebSocket carrying JSON messages (§5). This is
-   the part that gets specified publicly and PR'd upstream.
+This collapses every failure mode — controller death, controller reboot with amnesia,
+member reboot, WiFi partition, stale allocations — into one safe state. #940 already
+implements the member half (`checkMemberFailsafe()`) and the controller half (offline
+reserve). Our additions preserve it:
 
-### The core invariant
+- **Config safety rule** (to contribute if #940 lacks it): Σ(failsafe currents of all
+  group members) ≤ group max current — the group must be safe even with every member
+  islanded. Validated when group config is written/pushed.
+- **Claim hardening (E4):** the failsafe/allocation claim must outrank manual overrides
+  and the local shaper, or the invariant only holds until someone taps "charge now" on
+  a member's screen. Proposed: load-sharing claims above Safety 5000; to be agreed with
+  upstream on the #940 PR (it also interacts with #1112 — see §8).
 
-> A charger with managed mode enabled and no live lease charges at its configured
-> **islanded current** (default **0 A** = paused), period.
+The failsafe default (6 A vs 0) is an availability-vs-fail-dark trade per charger;
+`disable` mode is the conservative choice, 6 A keeps a car trickling through a WiFi
+outage. The Σ rule bounds the worst case either way.
 
-This one rule collapses every failure mode — box death, box reboot with amnesia, charger
-reboot, WiFi partition, stale grants — into a single safe state. The box never needs to
-persist grants.
+## 5. Load Manager box (E1)
 
-**Safety rule (validated on the box at config-write time):**
-Σ(islanded currents of all registered chargers) ≤ static budget. The box refuses a
-configuration that could overload the panel even with every charger islanded.
+- **Env:** `openevse_lm` (P4 board variant first). Compiles in the #940 load-sharing
+  modules with `loadsharing_role=controller`, the allocator extensions (§6), and
+  `lm_screen` LVGL screens; compiles out `evse_man` consumers tied to a physical EVSE
+  (RAPI, EVSE monitor, OCPP). Inherits config store, WiFi provisioning (incl. the QR
+  AP-mode screen), web server, MQTT/HA clients, OTA.
+- **Refactor needed (upstream-friendly):** #940's controller assumes it is *also* a
+  charging station (it claims its own EvseManager alongside sending peer allocations).
+  Make the "self" member optional so the controller role runs EVSE-less — a small,
+  clearly motivated change to propose on the branch ("controller without a local
+  EVSE"), which also benefits anyone wanting a dedicated coordinator.
+- **Data hub:** the box subscribes once to house-level feeds (MQTT topics or HA
+  entities — the same sources shaper/divert read today) and redistributes to members
+  via the existing `POST /status` push shapes. Members need zero new ingestion code and
+  keep full standalone capability when unmanaged. Under management, members' local
+  shaper/divert stand down (the allocation is the shaped limit; house-level eco replaces
+  local divert) — enforced naturally by claim priority once E4 ranks allocations above
+  them.
+- **Screen (LVGL, nightshift + light themes reused):** home screen = household headroom
+  bar (budget / EV draw / house draw / solar) + one row per member (name, state color,
+  mode, allocated vs drawn amps, connection health). Touch a row → detail +
+  priority/mode controls. Offline member rows amber: "failsafe @ N A".
+- **Web UI:** gui-nightshift stack with the load-share pages from Jeremy's GUI branch,
+  plus box-specific pages (feeds config, priorities). v1 = functional config pages.
+- **Hardware:** Guition JC4880P443C; display layer stays behind the existing panel
+  abstraction so a cheap ESP32-S3 panel is a later port, not a rewrite.
 
-**Allocation-time rule:** Σ(active leases) + Σ(islanded currents of currently
-*disconnected* registered chargers) ≤ live budget. The box always reserves the islanded
-current of any charger it cannot see, because that charger may legitimately be drawing it.
+## 6. Allocator extensions (E2 + E3)
 
-An islanded current > 0 (e.g. 6 A) is an explicit availability-vs-fail-dark trade the
-user can opt into per charger (garage WiFi flakiness should not mean the car is empty at
-7am); the safety rule bounds the worst case.
-
-### Composition with the Charge Manager (upstream PR #1112, open)
-
-PR #1112 gives scheduler timer windows per-event **features** (Divert, Shaper, RFID,
-Current = amps, OCPP placeholder) and **session limits** (Time / Energy / SoC / Cost),
-activating timer-controlled divert/shaper claims at Limit-class priority **1100** (the
-standalone shaper keeps Safety 5000). The lease is designed to sit cleanly on top:
-
-- The lease claims **`max_current`** (plus `state` for pause) at a priority strictly
-  above Safety 5000 — above both the standalone shaper and every #1112 window claim.
-  Because `max_current` composes as a *ceiling* on whatever charge current wins below
-  it, schedules keep deciding **when** and **intent** while the lease bounds **how
-  much**: a scheduled 32 A "Current" window under a 16 A lease charges at 16 A; an eco
-  window under that lease tracks surplus below 16 A.
-- While managed, a window whose feature is **Shaper** is inert (redundant — the lease is
-  the shaped limit), and a **Divert** window maps to `mode_request(eco)` for the window's
-  duration (house-level eco pool replaces local divert), reverting after. Existing
-  schedules keep their meaning without running a second controller.
-- **Session limits** (Time/Energy/SoC) and **RFID-required** windows remain fully local
-  and orthogonal: a lease caps amps; a limit ends a session.
-- #1112's `setSolar()/setGridIe()` injection points on divert confirm the upstream
-  data-push surface the `data` message reuses.
-- Practically: PR B (§9) is developed to apply on top of #1112 (it likely merges first),
-  and #1112's pytest integration harness (`tests/integration/`) is the natural home for
-  the protocol soak tests driving FakeEVSE instances.
-
-## 4. Managed-mode module (charger side)
-
-**Config** (config store keys, all persisted):
-
-- `managed_mode_enabled` (bool, default false)
-- `managed_mode_url` (string — `ws://<box-host>/managed`; charger initiates, so the box
-  never needs charger addresses)
-- `managed_mode_islanded_current` (amps, default 0)
-
-**Behavior:**
-
-- On enable/boot: claim `max_current = islanded_current` immediately, at a priority
-  strictly above Safety 5000 (and therefore above #1112's timer-window claims at 1100),
-  so no schedule, shaper, divert, or manual override can outbid it; then connect and
-  reconcile.
-- Lease handling: apply granted amps to the claim; a lease of 0 A presents as a distinct
-  **"waiting for load manager"** paused state on the web UI and LCD (LVGL charge/standby
-  screens gain a status line) — visibly different from a fault or manual stop.
-- TTL: leases carry a TTL in **relative milliseconds**, measured against the charger's
-  own `millis()`. No wall-clock, no NTP dependency, no skew problem. Expiry or socket
-  drop → revert claim to islanded current. Socket drop is the fast path; TTL is the
-  backstop for half-open sockets.
-- Reconnect: exponential backoff (1 s → 60 s cap) with jitter.
-- Local shaper stand-down: while managed mode is enabled, the charger's own current
-  shaper is suppressed (the lease *is* the shaped limit; two controllers on one CT
-  double-subtract and oscillate). Divert/eco decisioning likewise moves to the box; the
-  charger's eco/fast toggle becomes a `mode_request` (§5) rather than local divert control.
-- Data intake: `data` messages from the box are fed through the exact same handler as
-  `POST /status` push — zero new ingestion code paths.
-- Mode changes made locally (LCD/web/HA) are sent as `mode_request` and only become truth
-  when the box echoes `mode_set` (normally within one heartbeat, so UX-invisible).
-- Standalone compatibility: with `managed_mode_enabled=false` nothing changes anywhere.
-
-**Flash budget:** wifi_v1 (4 MB) sits at ~97.8%; the module is compile-gated
-(`ENABLE_MANAGED_MODE`) with the opt-in/opt-out default per target decided with upstream
-during the discussion-issue phase (precedent: `DISABLE_OCPP` on esp32-c3).
-
-### Claim-TTL primitive (precursor)
-
-A small standalone extension to the claims API: a claim may carry an expiry (relative ms,
-auto-release if not renewed). Useful independently — today any external controller that
-sets a claim and dies wedges it forever. Managed mode's lease enforcement is built on it.
-This ships as its own upstream PR first (§9).
-
-## 5. Lease protocol (WebSocket, JSON)
-
-Charger connects to `ws://<box>/managed`. All messages are JSON objects with a `"msg"`
-type field. Protocol is versioned via `hello`.
-
-**Charger → box:**
-
-| msg | Fields | Cadence |
-|---|---|---|
-| `hello` | `protocol` (int, 1), `id` (charger hostname), `firmware`, `max_current` (hardware ceiling), `islanded_current`, current `mode` | On connect |
-| `state` | `/status`-shaped snapshot subset: EVSE state, pilot amps, measured amps, session energy, vehicle SoC/range if known, `mode`, active lease seq | Every heartbeat (default **5 s**) |
-| `mode_request` | `mode` (`eco` \| `fast`) | On local user change |
-
-**Box → charger:**
-
-| msg | Fields | Cadence |
-|---|---|---|
-| `lease` | `amps` (0 = pause), `ttl_ms` (default **30 000**), `seq` (monotonic per box boot-epoch) | On every received `state` (renewal) + immediately on allocation change |
-| `mode_set` | `mode` — box-arbitrated truth (adopts `mode_request` unless it conflicts with a box-side change in the same window; box wins ties) | On change / in reply to `mode_request` |
-| `data` | `POST /status`-push-shaped house data: `solar`, `grid_ie`, `battery_level`, etc. | On feed update, throttled |
-
-**Rules:**
-
-- A charger ignores any `lease` whose `seq` is lower than the last applied one from the
-  same connection (guards against reordering); a new connection resets the epoch.
-- Renewal rides the heartbeat: `state` up → `lease` down. One round trip per cycle; a
-  missed cycle is tolerated: at 30 s TTL / 5 s heartbeat, ~6 renewals fit in one
-  TTL before a charger islands.
-- Defaults (`heartbeat_s=5`, `ttl_ms=30000`) are box-side config, sent to chargers via
-  the lease itself (`ttl_ms`) — chargers never assume a TTL.
-
-## 6. Allocator (box side)
+`computeAllocations()` stays a pure function (inputs → allocations); we extend its
+inputs and policy, keeping #940's shape so it remains native-testable and upstreamable:
 
 **Budget pipeline** — three layers, each degrading *downward only*:
 
-1. **Static budget** (mandatory config): amps available to EV circuits.
-2. **CT headroom** (optional): with a house-load feed (MQTT topic or HA entity — the same
-   sources `current_shaper` reads today), budget = min(static, panel_limit − live non-EV
-   draw), with the shaper's smoothing window, hysteresis, and safety margin relocated here.
-3. **Solar surplus** (optional): with a solar/grid_ie feed, compute exportable surplus
-   using `divert.cpp`'s established math (EMA smoothing, thresholds). Surplus feeds the
-   eco pool; it does not raise the grid budget.
+1. **Static group budget** (`loadsharing_group_max_current` × safety factor — #940 as-is).
+2. **CT headroom** (optional): with a house-load feed, budget = min(static,
+   panel_limit − live non-EV draw), with the shaper's smoothing and hysteresis relocated
+   here.
+3. **Solar surplus** (optional): computed divert-style (EMA smoothing, thresholds);
+   feeds the eco pool, never raises the grid budget.
 
-Feed staleness (divert-style timeout) drops that layer: solar stale → eco pool empties
-politely; CT stale → budget falls back to static. Never adjusts *up* on missing data.
+Feed staleness drops that layer (solar stale → eco pool empties politely; CT stale →
+static budget). Never adjusts *up* on missing data.
 
-**Two pools by box-arbitrated mode:**
+**Two pools by arbitrated mode (E3/E5):** fast-mode members share the grid budget
+(allocated first); eco-mode members share min(solar surplus, remaining budget) plus any
+per-member configured grid allowance (mirroring divert's minimum-charge behavior). Mode
+is settable on the member (its UI/HA, forwarded as a request) or on the box; the
+controller arbitrates, last-writer-wins, controller wins ties, and confirms via the
+existing member mode APIs.
 
-- **Fast pool** — shares the grid budget. Allocated first.
-- **Eco pool** — shares `min(solar surplus, remaining budget)`, plus any per-charger
-  configured grid allowance (mirroring divert's minimum-charge-current behavior).
+**Scarcity — priority + rotation (E2):** within a pool, sort by `loadsharing_priority`
+(key already exists in #940's config, currently unused by the algorithm), then apply
+#940's minimums logic; when equal-priority members are starving (allocated 0 while
+demanding), rotate the subset front on a configurable interval (default 30 min) with a
+minimum-hold time so rotation never flaps. Replaces the deterministic id-sort that
+starves the same car every time. The 6 A J1772 floor is #940's `min_current` — pausing
+one car beats starving both.
 
-**Within a pool — priority + rotation:**
+**Stability:** allocations shrink immediately but grow through hysteresis, so a kettle
+or passing cloud doesn't whipsaw the group.
 
-- Chargers sorted by per-charger priority (box config). Walk the list granting each its
-  request (clamped to its `max_current`) until the pool is exhausted.
-- **6 A floor (J1772):** any grant that would fall below 6 A becomes 0; the remainder
-  flows to the next charger in line. Pausing one car beats starving both.
-- **Rotation:** when equal-priority chargers are starving (received 0 while active), the
-  front of the line rotates on a configurable interval (default **30 min**) with a
-  minimum-hold time so rotation never flaps mid-oscillation.
+## 7. Failure modes
 
-**Stability:** grants shrink immediately but grow through the shaper's hysteresis
-(rate-limited), so a kettle or a passing cloud doesn't whipsaw allocations. All grants are
-re-derived every heartbeat from current inputs — the allocator is a pure function
-(inputs → grants) with a small rotation-state memory.
-
-## 7. Load Manager box firmware
-
-- **Env:** `openevse_lm` (P4 board variant first). Compiles out `evse_man`, RAPI, OCPP,
-  charger-side divert/shaper consumers; compiles in `load_manager` (WS server + charger
-  registry + allocator) and `lm_screen` (LVGL screens). Inherits config store, WiFi
-  provisioning (incl. the QR AP-mode screen), web server, MQTT/HA clients, OTA.
-- **Charger registry:** chargers appear on first `hello` and are persisted (name,
-  islanded current as reported, priority, mode) so the box can reserve islanded amps for
-  registered-but-disconnected chargers and render their rows. Registry edits (priority,
-  remove) via box UI.
-- **Screen (LVGL, nightshift + light themes reused):** home screen = household headroom
-  bar (budget / EV draw / house draw / solar) + one row per charger (name, state color,
-  mode, allocated vs drawn amps, lease health). Touch a row → detail + priority/mode
-  controls. Disconnected charger rows amber: "islanded @ N A".
-- **Web UI:** the box serves the gui-nightshift stack with a load-manager page set
-  (charger list, budget config, feed config, priorities). v1 = functional config pages.
-- **Hardware:** Guition JC4880P443C. Display layer stays behind the existing panel
-  abstraction so an ESP32-S3 panel board is a port, not a rewrite.
-
-## 8. Failure modes
-
-| Failure | Behavior |
+| Failure | Behavior (mechanism) |
 |---|---|
-| Box dies / reboots | Sockets drop → chargers island immediately (TTL backstops half-open sockets). Box returns with no grant memory; chargers reconnect, `hello`, get fresh leases. Nothing persisted, nothing stale. |
-| Charger reboots | Boots to islanded current → connects → reconciles. |
-| WiFi partition (one charger) | That charger islands; box reserves its islanded amps and reallocates the rest. |
+| Controller (box) dies / reboots | Members hit heartbeat timeout → failsafe current (#940 `checkMemberFailsafe`). Controller returns with no allocation memory; re-bootstraps peers, reallocates. Nothing persisted. |
+| Member reboots | Boots unallocated → failsafe current → controller re-discovers/reconnects → allocation resumes. |
+| WiFi partition (one member) | Member → failsafe; controller reserves `failsafe_peer_assumed_current` for it (#940 offline reserve) and reallocates the rest. |
 | Feed (CT/solar/HA) stale | That budget layer drops out downward (§6). |
-| Box config error | Σ(islanded) ≤ static budget validated at config write; invalid configs refused. |
-| Clock skew / NTP loss | Irrelevant: TTLs are relative durations on the charger's own millis. |
-| Box reboot mid-flight leases | New connection epoch + `seq` reset; chargers ignore stale-seq leases; worst case one TTL of islanded behavior. |
+| Group config error | Σ(failsafe) ≤ group budget validated at config write/push (§4). |
+| Clock skew / NTP loss | Irrelevant: timeouts are relative millis (#940 as-is). |
+| Manual override on a member | Outranked by the hardened load-sharing claim (E4). Without E4 this defeats the group budget — the key review point on #940. |
 
-## 9. Upstream sequencing
+## 8. Interplay with the Charge Manager (PR #1112)
 
-1. **Discussion issue** on OpenEVSE_ESP32_Firmware: the protocol section (§3–§5) as a
-   sketch, framed as the leader/follower feature (Tesla/Wallbox/go-e precedent), stating
-   the primary-agnostic design. Get maintainer buy-in on protocol shape + flash gating
-   before significant code.
-2. **PR A — claim-TTL primitive** (§4): tiny, standalone, independently useful.
-3. **PR B — managed mode + WS client + lease protocol**: gated `ENABLE_MANAGED_MODE`,
-   built against upstream master and structured to apply cleanly on top of PR #1112
-   (charge manager) — see §3's composition rules. If #1112 merges first, PR B rebases
-   onto it and extends its `tests/integration/` harness.
-4. **Fork-side in parallel:** `openevse_lm` box env, allocator, screens — the allocator
-   module written portable so a charger-hosted primary is possible later.
+#1112 (open) gives scheduler windows per-event features (Divert, Shaper, RFID,
+Current = amps) and session limits, with timer-window claims at Limit 1100 — the *same*
+priority #940 currently uses for load sharing, which makes their interaction
+order-dependent. The E4 hardening resolves it: load-sharing allocation claims rank above
+Safety 5000, so schedules keep deciding **when** and **intent** while the allocation
+bounds **how much** (a scheduled 32 A window under a 16 A allocation charges at 16 A).
+Under management, a Shaper window is inert (redundant) and a Divert window maps to an
+eco mode request (house-level eco replaces local divert). Session limits and
+RFID-required windows stay fully local and orthogonal. Both PRs will likely merge; the
+priority-layering conversation belongs on the #940 review with #1112 in view.
 
-PRs A/B live on branches rebased on upstream master, kept submittable at all times;
-development/bench happens on the fork.
+## 9. Upstream engagement plan
+
+1. **Bench #940 as-is** — two FakeEVSE charger builds running Jeremy's branch + our
+   pytest harness (his #1125 integration-test scaffolding): protocol soak,
+   kill-the-controller, kill-the-WiFi, config-push drills. Report results on the
+   issue/PR. This is review feedback backed by a working bench, the most credible way
+   to show up.
+2. **Review feedback on #940:** claim-priority gap (E4, §7 last row), Σ(failsafe) ≤
+   budget config validation, scarcity starvation (motivates E2).
+3. **Contribution PR: E2 (priority + rotation)** onto the #940 branch — pure-function
+   change + native tests, uses the existing `loadsharing_priority` key.
+4. **Contribution PR/patch: controller-without-local-EVSE** (§5 refactor) — enables any
+   dedicated-coordinator use case, not just our box.
+5. **Fork-side in parallel:** `openevse_lm` box env + LVGL screens + data-hub feeds
+   (E1), then E3/E5 (pools + mode arbitration) proven on the fork and offered upstream
+   once #940 lands.
 
 ## 10. Testing
 
-- **Native units** (doctest, per `test_ha_oauth`/`test_fake_evse` pattern):
-  - Allocator as a pure function: (budget, surplus, charger list with modes/priorities/
-    requests/max) → grants. Table-driven cases for pools, 6 A floor, rotation +
-    min-hold, hysteresis, disconnected-charger reservation, Σ-invariants.
-  - Charger-side lease state machine as a pure unit: events (lease, tick, socket-drop,
-    ttl-expiry, enable/disable) → claimed amps + UI state.
-  - Protocol codec: message parse/serialize round-trips, stale-seq rejection.
-- **Zero-hardware bench:** two FakeEVSE charger builds + one box build; soak the full
-  protocol including kill-the-box, kill-the-WiFi, config-change-under-load drills.
+- **Native units** (doctest, per existing `test_*` pattern): extended
+  `computeAllocations()` table-driven — pools, priorities, rotation + min-hold,
+  minimums/capping (regression vs #940's cases), offline reserve, Σ-invariant,
+  hysteresis. Mode-arbitration state machine as a pure unit.
+- **Zero-hardware bench:** FakeEVSE members + box controller build; full failure-mode
+  drill list from §7; also used to validate stock #940 (step 1 above).
 - **HW validation:** two real chargers + the P4 box; overnight scarcity-rotation test
   with both cars; solar-day eco-pool test.
 
 ## 11. Open items (deliberately deferred)
 
-- Gating default (opt-in vs opt-out per target) — decided with upstream in the
-  discussion issue, driven by the 4 MB flash budget.
-- Rotation fairness refinement (energy-delivered-weighted rather than time-sliced) and
-  SoC-aware tiebreaking — v2, data is already in `state`.
-- Box-side TLS/auth for the WS endpoint (LAN-trust in v1, matches existing charger APIs).
-- S3 panel port of the box firmware.
-- Charger-hosted primary build of the allocator module.
+- Exact claim priority value/class for E4 — agreed with upstream on the #940 review
+  (must consider #1112's 1100-class windows).
+- How #940 delivers allocations to members (WS message vs HTTP) is treated as its
+  internal detail; we adopt whatever the branch settles on.
+- Rotation fairness refinement (energy-weighted) and SoC-aware tiebreaking — v2; the
+  data is already in member status.
+- Box-side auth/TLS toward members (LAN-trust in v1, matches existing charger APIs).
+- Porting the box to cheap ESP32-S3 panel hardware — v1 ships on the ESP32-P4 (§5);
+  the box firmware stays display-abstracted so an S3 port is possible later.
+- Whether upstream wants E3 (solar pools) in-tree or as a follow-on — decided after E2
+  lands and #940 merges.
