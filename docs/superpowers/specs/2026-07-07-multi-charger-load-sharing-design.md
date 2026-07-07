@@ -60,7 +60,7 @@ protocol and modules as the foundation and defines our extensions on top.
 | E1 | **Load Manager box** — `openevse_lm` PlatformIO env: the #940 controller role on a Guition ESP32-P4 + 4.3" touchscreen, with no attached EVSE | A charger-free primary that lives in the house; screen shows household state; symmetric charger fleet (all members) |
 | E2 | **Priority + rotation allocator** | #940's scarcity behavior starves deterministically (same id wins every time). Use the existing-but-unused `loadsharing_priority` config key, and rotate equal-priority starving members on an interval so both cars charge overnight |
 | E3 | **Solar/eco pools** | Fast pool shares the grid budget; eco pool shares exportable solar surplus. House-level divert replaces N independent divert controllers |
-| E4 | **Claim-priority hardening** | #940 claims at Limit (1100): a manual override or the shaper (Safety 5000) can outbid the group budget. The load-sharing claim must rank above anything user-settable |
+| E4 | **Member failsafe claim** (bench-corrected 2026-07-07) | Connected members already claim at Limit 1100, which outbids a Manual override (1000) — but the failsafe path places NO claim (`checkMemberFailsafe()` only flips a flag), so an islanded member never throttles and an override runs uncapped. Fix = apply the failsafe claim member-side; priorities stay as-is. See `docs/superpowers/2026-07-940-bench-findings.md` |
 | E5 | **Mode arbitration** (eco/fast per charger, settable on charger or box, box wins) | Needed by E3; uses members' existing mode/config APIs |
 
 E1 is fork-side (upstream has no P4 target). E2 and E4 are upstream contributions onto
@@ -96,10 +96,13 @@ reserve). Our additions preserve it:
 - **Config safety rule** (to contribute if #940 lacks it): Σ(failsafe currents of all
   group members) ≤ group max current — the group must be safe even with every member
   islanded. Validated when group config is written/pushed.
-- **Claim hardening (E4):** the failsafe/allocation claim must outrank manual overrides
-  and the local shaper, or the invariant only holds until someone taps "charge now" on
-  a member's screen. Proposed: load-sharing claims above Safety 5000; to be agreed with
-  upstream on the #940 PR (it also interacts with #1112 — see §8).
+- **Failsafe claim (E4, bench-corrected):** the failsafe path must place the same
+  Limit-priority claim the allocation path already uses (web_server.cpp:1234-1250) —
+  max_current = failsafe current, or state = disabled in `disable` mode. Without it the
+  invariant only holds while connected: a member that loses its controller reports
+  failsafe but charges uncapped, and a manual override runs uncontested (bench Drills
+  A/B). The original "must outrank Safety 5000" framing was wrong — Limit 1100 already
+  outbids Manual 1000; no priority change is needed.
 
 The failsafe default (6 A vs 0) is an availability-vs-fail-dark trade per charger;
 `disable` mode is the conservative choice, 6 A keeps a car trickling through a WiFi
@@ -122,7 +125,7 @@ outage. The Σ rule bounds the worst case either way.
   via the existing `POST /status` push shapes. Members need zero new ingestion code and
   keep full standalone capability when unmanaged. Under management, members' local
   shaper/divert stand down (the allocation is the shaped limit; house-level eco replaces
-  local divert) — enforced naturally by claim priority once E4 ranks allocations above
+  local divert) — enforced naturally by the allocation claim at Limit 1100 (plus the E4 failsafe claim when islanded), which outranks
   them.
 - **Screen (LVGL, nightshift + light themes reused):** home screen = household headroom
   bar (budget / EV draw / house draw / solar) + one row per member (name, state color,
@@ -178,15 +181,16 @@ or passing cloud doesn't whipsaw the group.
 | Feed (CT/solar/HA) stale | That budget layer drops out downward (§6). |
 | Group config error | Σ(failsafe) ≤ group budget validated at config write/push (§4). |
 | Clock skew / NTP loss | Irrelevant: timeouts are relative millis (#940 as-is). |
-| Manual override on a member | Outranked by the hardened load-sharing claim (E4). Without E4 this defeats the group budget — the key review point on #940. |
+| Manual override on a member | Connected: outbid by the allocation claim (Limit 1100 > Manual 1000), verified on bench. Islanded: currently WINS because the failsafe path places no claim — fixed by E4. |
 
 ## 8. Interplay with the Charge Manager (PR #1112)
 
 #1112 (open) gives scheduler windows per-event features (Divert, Shaper, RFID,
 Current = amps) and session limits, with timer-window claims at Limit 1100 — the *same*
 priority #940 currently uses for load sharing, which makes their interaction
-order-dependent. The E4 hardening resolves it: load-sharing allocation claims rank above
-Safety 5000, so schedules keep deciding **when** and **intent** while the allocation
+order-dependent. Whether load-sharing claims should be raised above the window claims is
+a layering question to settle on the two reviews together; the required outcome is that
+schedules keep deciding **when** and **intent** while the allocation
 bounds **how much** (a scheduled 32 A window under a 16 A allocation charges at 16 A).
 Under management, a Shaper window is inert (redundant) and a Divert window maps to an
 eco mode request (house-level eco replaces local divert). Session limits and
@@ -200,7 +204,7 @@ priority-layering conversation belongs on the #940 review with #1112 in view.
    kill-the-controller, kill-the-WiFi, config-push drills. Report results on the
    issue/PR. This is review feedback backed by a working bench, the most credible way
    to show up.
-2. **Review feedback on #940:** claim-priority gap (E4, §7 last row), Σ(failsafe) ≤
+2. **Review feedback on #940:** member-failsafe-claim gap (E4, §7 last row), Σ(failsafe) ≤
    budget config validation, scarcity starvation (motivates E2).
 3. **Contribution PR: E2 (priority + rotation)** onto the #940 branch — pure-function
    change + native tests, uses the existing `loadsharing_priority` key.
@@ -223,7 +227,7 @@ priority-layering conversation belongs on the #940 review with #1112 in view.
 
 ## 11. Open items (deliberately deferred)
 
-- Exact claim priority value/class for E4 — agreed with upstream on the #940 review
+- Whether load-sharing claims should be raised above #1112's 1100-class window claims once both merge — settled on the two reviews (E4 itself needs no priority change)
   (must consider #1112's 1100-class windows).
 - How #940 delivers allocations to members (WS message vs HTTP) is treated as its
   internal detail; we adopt whatever the branch settles on.
