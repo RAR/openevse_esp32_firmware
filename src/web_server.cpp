@@ -467,6 +467,25 @@ handleTeslaVeh(MongooseHttpServerRequest *request)
 }
 
 // -------------------------------------------------------------------
+// Whether vehicle telemetry pushed to POST /status should be accepted.
+//
+// Home Assistant reaches this endpoint two different ways: the firmware can
+// poll HA for the configured entities, or HA can push here from an automation
+// or the integration. Only the HTTP source used to be accepted, so a user who
+// picked "Home Assistant" -- the obvious choice when the data comes from Home
+// Assistant -- had every push silently dropped, with no error and no log line
+// to explain the missing battery_level.
+//
+// Both are the same upstream data, so accepting both is last-writer-wins
+// between two values that agree. A push simply arrives sooner than the next
+// poll. Sources that own the vehicle data themselves (Tesla, MQTT) are still
+// excluded, so a push cannot fight a source that is actively polling elsewhere.
+static bool vehiclePushAccepted()
+{
+  return VEHICLE_DATA_SRC_HTTP == vehicle_data_src ||
+         VEHICLE_DATA_SRC_HOMEASSISTANT == vehicle_data_src;
+}
+
 // Returns status json
 // url: /status
 // -------------------------------------------------------------------
@@ -517,19 +536,19 @@ void handleStatusPost(MongooseHttpServerRequest *request, MongooseHttpServerResp
       }
       send_event = false; // Divert sends the event so no need to send here
     }
-    if(doc.containsKey("battery_level") && vehicle_data_src == VEHICLE_DATA_SRC_HTTP) {
+    if(doc.containsKey("battery_level") && vehiclePushAccepted()) {
       double vehicle_soc = doc["battery_level"];
       DBUGF("vehicle_soc:%d%%", vehicle_soc);
       evse.setVehicleStateOfCharge(vehicle_soc);
       doc["vehicle_state_update"] = 0;
     }
-    if(doc.containsKey("battery_range") && vehicle_data_src == VEHICLE_DATA_SRC_HTTP) {
+    if(doc.containsKey("battery_range") && vehiclePushAccepted()) {
       double vehicle_range = doc["battery_range"];
       DBUGF("vehicle_range:%dKM", vehicle_range);
       evse.setVehicleRange(vehicle_range);
       doc["vehicle_state_update"] = 0;
     }
-    if(doc.containsKey("time_to_full_charge") && vehicle_data_src == VEHICLE_DATA_SRC_HTTP){
+    if(doc.containsKey("time_to_full_charge") && vehiclePushAccepted()){
       double vehicle_eta = doc["time_to_full_charge"];
       DBUGF("vehicle_eta:%d", vehicle_eta);
       evse.setVehicleEta(vehicle_eta);
