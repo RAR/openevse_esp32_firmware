@@ -20,17 +20,19 @@
 // on this board, so it competes directly with the WiFi/TLS/Mongoose stack and
 // the ~30 KB draw buffer.
 #define LV_MEM_CUSTOM 0
-// 32 KB. This was cut to 24 KB on the strength of a measured 8.6 KB peak
-// (lv_used_max in /status) with the previous, sparser charge screen. The
-// reworked screen carries noticeably more: a second arc, three tile containers
-// and roughly half again as many labels, so that measurement no longer bounds
-// this build.
+// 32 KB, raised from 24 KB. The 24 KB figure rested on an 8.6 KB peak measured
+// with the previous, sparser charge screen; the reworked screen adds a second
+// arc, three tile containers and half again as many labels.
 //
-// 32 KB is the interim value until lv_used_max has been re-read on hardware
-// across a screen transition (LVGL peaks while both screens are briefly live).
-// Erring high on purpose: undersizing does not fail gracefully -- LVGL answers
-// pool exhaustion with an assert loop that the task watchdog turns into a
-// reboot -- and this runs on the live charger. Trim once measured.
+// Re-measured on hardware with this build: lv_used_max 30%, lv_frag_max 23% of
+// 32 KB, i.e. a ~9.6 KB peak. That sample includes two live theme switches,
+// which is the genuine worst case -- charge_screen_build() loads the new screen
+// before deleting the old, so both widget trees are briefly allocated.
+//
+// 24 KB would still fit that peak (40%), but the margin is not worth reclaiming
+// 8 KB on a unit with 80 KB+ free: undersizing does not fail gracefully. LVGL
+// answers pool exhaustion with an assert loop that the task watchdog turns into
+// a reboot, and this runs on the live charger.
 #define LV_MEM_SIZE (32U * 1024U)
 
 // Tick from Arduino millis() on-device. The native/EpoxyDuino host build advances
