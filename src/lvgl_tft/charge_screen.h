@@ -42,10 +42,14 @@ struct ChargeScreenData {
                               // the caller (valid when wifi_client && connected)
   int      sta_count;         // AP connected stations (valid when !wifi_client)
   const char *datetime;       // "YYYY-MM-DD  HH:MM"
-  const char *hostname;       // top strip, second line
-  const char *ip;             // top strip, second line
+  const char *hostname;       // only rendered when show_hostip
+  const char *ip;             // only rendered when show_hostip
+  bool     show_hostip;       // The address lives on the standby screen and this
+                              // screen normally stays free of it. Set this when
+                              // standby is unreachable (backlight timeout of 0)
+                              // so the address isn't left nowhere at all.
   const char *msg_line;       // transient message (boot/OTA/status); "" when none
-                              // — takes over the hostname/IP line
+                              // — owns the top strip's second line
 };
 
 // Build + load the charge screen (own LVGL screen object).

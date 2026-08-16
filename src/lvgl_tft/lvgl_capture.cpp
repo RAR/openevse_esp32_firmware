@@ -17,14 +17,23 @@
 #include "setup_screen.h"
 #include "standby_screen.h"
 
+// Advance LVGL until the screen has settled, then a few frames more.
+//
+// The ring tweens over ARC_ANIM_MS, so a fixed handful of frames captures it
+// part-way through its travel and the screenshot shows a gauge reading that
+// never actually occurs. Run the clock on until no animation is left, with a
+// cap so a runaway animation can't wedge the export.
 static void pump_frames(uint32_t frames = 4)
 {
-  for(uint32_t i = 0; i < frames; i++) {
+  const uint32_t max_frames = 120;   // ~2 s of 16 ms ticks
+  uint32_t i = 0;
+  do {
     lv_tick_inc(16);
     lv_timer_handler();
     lv_refr_now(NULL);
     lvgl_panel_pump();
-  }
+    i++;
+  } while((i < frames || lv_anim_count_running() > 0) && i < max_frames);
 }
 
 static bool write_capture(const char *out_dir, const char *name)

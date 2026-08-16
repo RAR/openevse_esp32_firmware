@@ -492,12 +492,15 @@ unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
   strftime(dt, sizeof(dt), "%Y-%m-%d  %H:%M", &ti);
   d.datetime = dt;
 
-  // Top strip, second line: hostname + IP. A transient message overrides it.
+  // The address lives on the standby screen. Fall back to showing it here only
+  // when standby can never appear -- bl_should_standby() returns false outright
+  // for a timeout of 0, so otherwise the address would be nowhere on the panel.
   char ipbuf[20];
   IPAddress ip = _wifi_client ? WiFi.localIP() : WiFi.softAPIP();
   snprintf(ipbuf, sizeof(ipbuf), "%s", ip.toString().c_str());
   d.hostname = esp_hostname.c_str();
   d.ip = ipbuf;
+  d.show_hostip = (0 == (uint32_t)lcd_backlight_timeout);
   d.msg_line = (!_msg_cleared && ml[0]) ? ml : "";
 
   charge_screen_update(d);

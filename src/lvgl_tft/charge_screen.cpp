@@ -480,17 +480,23 @@ void charge_screen_update(const ChargeScreenData &d)
     lv_label_set_text(tile_value[2], buf);
   }
 
-  // Top strip line 2: a transient message takes over the hostname/IP line.
+  // Top strip line 2 belongs to transient messages. The address is reference
+  // information, not status, so it lives on the standby screen instead -- unless
+  // standby can never appear, in which case it falls back to here.
   if (d.msg_line && d.msg_line[0]) {
     lv_label_set_text(msg_lbl, d.msg_line);
     lv_obj_clear_flag(msg_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(hostip_lbl, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(msg_lbl, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(hostip_lbl, LV_OBJ_FLAG_HIDDEN);
-    snprintf(buf, sizeof(buf), "%s  " LV_SYMBOL_BULLET "  %s", d.hostname ? d.hostname : "",
-             d.ip ? d.ip : "");
-    lv_label_set_text(hostip_lbl, buf);
+    if (d.show_hostip) {
+      snprintf(buf, sizeof(buf), "%s  " LV_SYMBOL_BULLET "  %s",
+               d.hostname ? d.hostname : "", d.ip ? d.ip : "");
+      lv_label_set_text(hostip_lbl, buf);
+      lv_obj_clear_flag(hostip_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(hostip_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
   }
 }
 
