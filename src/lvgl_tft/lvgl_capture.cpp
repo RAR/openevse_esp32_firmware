@@ -15,6 +15,7 @@
 #include "nightshift.h"
 #include "openevse.h"
 #include "setup_screen.h"
+#include "standby_screen.h"
 
 static void pump_frames(uint32_t frames = 4)
 {
@@ -162,7 +163,32 @@ bool lvgl_capture_write_samples(const char *out_dir)
     return false;
   }
 
+  // Standby: the same skeleton with the live figures dropped. Captured last so
+  // a side-by-side with charge-idle shows the ring and tile column landing in
+  // exactly the same place.
+  StandbyScreenData sd = {};
+  sd.evse_state = OPENEVSE_STATE_SLEEPING;
+  sd.temp_valid = true;
+  sd.temp_c = 31.4f;
+  sd.wifi_client = true;
+  sd.wifi_connected = true;
+  sd.wifi_pct = 85;
+  sd.today_kwh = 8.42;
+  sd.week_kwh = 137.6;
+  sd.total_kwh = 4821.0;
+  sd.clock = "2026-06-21  07:37";
+  sd.hostname = "openevse.local";
+  sd.ip = "192.168.4.2";
+
+  standby_screen_build();
   charge_screen_destroy();
+  standby_screen_update(sd);
+  pump_frames();
+  if(!write_capture(out_dir, "standby")) {
+    return false;
+  }
+
+  standby_screen_destroy();
   return true;
 }
 

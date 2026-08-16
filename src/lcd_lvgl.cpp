@@ -409,15 +409,16 @@ unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
     sd.temp_fahrenheit   = temp_unit.equals("f");
     sd.wifi_client       = _wifi_client;
     sd.wifi_connected    = _wifi_connected;
-    sd.rssi              = WiFi.RSSI();
+    sd.wifi_pct          = smoothedWifiPercent(WiFi.RSSI());
     sd.sta_count         = WiFi.softAPgetStationNum();
     sd.today_kwh         = _evse->getTotalDay();
+    sd.week_kwh          = _evse->getTotalWeek();
     sd.total_kwh         = _evse->getTotalEnergy();
 
     char ck[24];
     timeval tv; gettimeofday(&tv, NULL);
     struct tm ti; localtime_r(&tv.tv_sec, &ti);
-    strftime(ck, sizeof(ck), "%Y-%m-%d  %H:%M:%S", &ti);  // match the charge screen header
+    strftime(ck, sizeof(ck), "%Y-%m-%d  %H:%M", &ti);  // match the charge screen header
     sd.clock = ck;
 
     char ipbuf[20];

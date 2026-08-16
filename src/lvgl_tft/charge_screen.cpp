@@ -42,28 +42,15 @@
 // Ring full-scale (amps). The ring is indicative, not a hard gauge.
 #define RING_FULL_SCALE_A 48.0f
 
-// Geometry. Both rings share a centre so they read as one instrument.
-#define ARC_SIZE      188
-#define SOC_ARC_SIZE  212
-#define ARC_LEFT       24       // LEFT_MID x offset of the power ring
-#define SOC_ARC_LEFT   12       // ... and of the SoC ring (same centre)
-#define ARC_Y           2       // LEFT_MID y offset, shared
-#define ARC_BAND       14       // power ring band width
-#define SOC_BAND        8       // SoC ring band width
+// Power-ring geometry (RING_*) and the tile column (TILE_*) come from
+// screen_common.h so the standby screen lands them in the same place. Only the
+// SoC ring is local to this screen -- it shares the power ring's centre, sitting
+// just outside it so the two read as one instrument.
+#define SOC_ARC_SIZE  (RING_SIZE + 24)
+#define SOC_ARC_LEFT  (RING_LEFT - 12)
+#define SOC_BAND        8
 
 #define LEFT_COL_W    236       // text under the rings spans the left column
-#define TILE_X        248
-#define TILE_W        224
-#define TILE_H         80
-
-// Max rendered width (px) for the centre state word at the large font before we
-// step down a size. Sized to the power ring's usable inner width so long words
-// ("NOT CONNECTED") never wrap onto the band.
-//
-// Deliberately not screen_common.h's STATE_WORD_FIT_W: that one is sized for the
-// 200px ring the standby screen still uses, whereas this ring shrank to 188 to
-// clear the SoC ring outside it.
-#define CHARGE_STATE_WORD_FIT_W 150
 
 // Power-ring tween duration. Long enough to read as motion at 1 Hz updates,
 // short enough to have settled before the next sample arrives.
@@ -198,7 +185,7 @@ void charge_screen_build()
   // --- SoC ring (outer) — created first so the power ring sits on top ---
   soc_arc = lv_arc_create(scr);
   lv_obj_set_size(soc_arc, SOC_ARC_SIZE, SOC_ARC_SIZE);
-  lv_obj_align(soc_arc, LV_ALIGN_LEFT_MID, SOC_ARC_LEFT, ARC_Y);
+  lv_obj_align(soc_arc, LV_ALIGN_LEFT_MID, SOC_ARC_LEFT, RING_Y);
   lv_arc_set_rotation(soc_arc, 135);
   lv_arc_set_bg_angles(soc_arc, 0, 270);
   lv_arc_set_range(soc_arc, 0, 100);
@@ -214,8 +201,8 @@ void charge_screen_build()
 
   // --- Power ring (inner) ---
   arc = lv_arc_create(scr);
-  lv_obj_set_size(arc, ARC_SIZE, ARC_SIZE);
-  lv_obj_align(arc, LV_ALIGN_LEFT_MID, ARC_LEFT, ARC_Y);
+  lv_obj_set_size(arc, RING_SIZE, RING_SIZE);
+  lv_obj_align(arc, LV_ALIGN_LEFT_MID, RING_LEFT, RING_Y);
   lv_arc_set_rotation(arc, 135);
   lv_arc_set_bg_angles(arc, 0, 270);
   lv_arc_set_range(arc, 0, 100);
@@ -223,15 +210,15 @@ void charge_screen_build()
   lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
   lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(arc, ARC_BAND, LV_PART_MAIN);
-  lv_obj_set_style_arc_width(arc, ARC_BAND, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(arc, RING_BAND, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(arc, RING_BAND, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(arc, COL_TRACK, LV_PART_MAIN);
   lv_obj_set_style_arc_color(arc, COL_ACCENT, LV_PART_INDICATOR);
 
   // --- Ring centre: state word (idle) OR big kW value (charging) ---
   center_state = lv_label_create(scr);
   lv_label_set_long_mode(center_state, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(center_state, CHARGE_STATE_WORD_FIT_W);
+  lv_obj_set_width(center_state, STATE_WORD_FIT_W);
   lv_obj_set_style_text_align(center_state, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(center_state, "");
   lv_obj_set_style_text_color(center_state, COL_ACCENT, 0);
@@ -302,6 +289,14 @@ static void arc_anim_exec(void *obj, int32_t v)
 
 static void arc_set_animated(lv_obj_t *a, int target)
 {
+  // Cancel any tween still in flight BEFORE reading the arc's value. Mid-tween
+  // that value is just wherever the animation has got to, so comparing against
+  // it and returning early leaves the old animation running on to its ORIGINAL
+  // target. That is how the ring ended up stuck at the last charging current
+  // after a session stopped: the new (lower) target briefly matched the value
+  // the outgoing tween was passing through, so the update was skipped.
+  lv_anim_del(a, arc_anim_exec);
+
   int16_t cur = lv_arc_get_value(a);
   if (cur == target) {
     return;
@@ -370,7 +365,7 @@ void charge_screen_update(const ChargeScreenData &d)
     // ring, drop one size for the wide ones so they stay on a single line.
     lv_point_t sz;
     lv_txt_get_size(&sz, word, &lv_font_montserrat_28, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-    const lv_font_t *font = (sz.x <= CHARGE_STATE_WORD_FIT_W) ? &lv_font_montserrat_28
+    const lv_font_t *font = (sz.x <= STATE_WORD_FIT_W) ? &lv_font_montserrat_28
                                                        : &lv_font_montserrat_20;
     lv_obj_set_style_text_font(center_state, font, 0);
 
@@ -379,9 +374,14 @@ void charge_screen_update(const ChargeScreenData &d)
     lv_obj_align_to(center_state, arc, LV_ALIGN_CENTER, 0, 0);
   }
 
-  // Ring: actual amps when charging, else the pilot setpoint, as % of full scale.
-  float ring_a = d.charging ? d.amps : (float)d.pilot_a;
-  int ring = (int)(ring_a / RING_FULL_SCALE_A * 100.0f);
+  // Ring: current actually being delivered, as % of full scale.
+  //
+  // It used to fall back to the pilot setpoint when not charging, but the pilot
+  // holds its last commanded value after a session ends, so an idle ring sat at
+  // exactly the level it had been charging at -- indistinguishable from a
+  // session still running. The ring is a flow gauge; when nothing is flowing it
+  // should be empty. The pilot is still spelled out in text below it.
+  int ring = (int)(d.amps / RING_FULL_SCALE_A * 100.0f);
   if (ring < 0) ring = 0; else if (ring > 100) ring = 100;
   arc_set_animated(arc, ring);
 
