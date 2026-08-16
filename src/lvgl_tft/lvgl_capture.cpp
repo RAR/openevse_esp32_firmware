@@ -37,16 +37,21 @@ static ChargeScreenData sample_charge_data()
 {
   ChargeScreenData d = {};
   d.pilot_a = 32;
+  d.pilot_source = "";
   d.volts = 241.0f;
   d.temp_valid = true;
   d.temp_c = 31.4f;
   d.wifi_client = true;
   d.wifi_connected = true;
-  d.rssi = -58;
-  d.datetime = "2026-06-21 07:37:00";
+  d.wifi_pct = 85;
+  d.datetime = "2026-06-21  07:37";
   d.hostname = "openevse.local";
   d.ip = "192.168.4.2";
   d.msg_line = "";
+  // Lifetime totals back the tile column whenever no vehicle is attached.
+  d.total_day_kwh = 8.42;
+  d.total_week_kwh = 137.6;
+  d.total_kwh = 4821.0;
   return d;
 }
 
@@ -93,6 +98,7 @@ bool lvgl_capture_write_samples(const char *out_dir)
 
   d.evse_state = OPENEVSE_STATE_NOT_CONNECTED;
   d.vehicle_connected = false;
+  d.session_active = false;
   d.charging = false;
   d.amps = 0.0f;
   d.elapsed_s = 0;
@@ -105,12 +111,15 @@ bool lvgl_capture_write_samples(const char *out_dir)
 
   d.evse_state = OPENEVSE_STATE_CONNECTED;
   d.vehicle_connected = true;
+  d.session_active = true;
   charge_screen_update(d);
   pump_frames();
   if(!write_capture(out_dir, "charge-connected")) {
     return false;
   }
 
+  // Charging with everything live: a claim trimming the pilot, and vehicle SoC
+  // and range from the HA/MQTT push path. Exercises both rings at once.
   d.evse_state = OPENEVSE_STATE_CHARGING;
   d.vehicle_connected = true;
   d.charging = true;
@@ -118,19 +127,34 @@ bool lvgl_capture_write_samples(const char *out_dir)
   d.amps = 30.0f;
   d.elapsed_s = 4523;
   d.session_wh = 9120.0;
+  d.pilot_a = 31;
+  d.pilot_source = "solar divert";
+  d.soc_valid = true;
+  d.soc_percent = 78;
+  d.range_valid = true;
+  d.range = 214;
+  d.range_miles = false;
   charge_screen_update(d);
   pump_frames();
   if(!write_capture(out_dir, "charge-charging")) {
     return false;
   }
 
-  d.evse_state = OPENEVSE_STATE_GFI_FAULT;
+  // Worst-case widths: the longest fault word, the longest claim name and
+  // three-digit figures all at once.
+  d.evse_state = OPENEVSE_STATE_GFI_SELF_TEST_FAILED;
   d.vehicle_connected = true;
   d.charging = false;
   d.power_kw = 0.0f;
   d.amps = 0.0f;
-  d.elapsed_s = 0;
-  d.session_wh = 0.0;
+  d.elapsed_s = 359999;
+  d.session_wh = 99450.0;
+  d.pilot_a = 48;
+  d.pilot_source = "demand shaper";
+  d.soc_percent = 100;
+  d.range = 388;
+  d.range_miles = true;
+  d.temp_c = 61.2f;
   d.msg_line = "GFCI self-test fault";
   charge_screen_update(d);
   pump_frames();
