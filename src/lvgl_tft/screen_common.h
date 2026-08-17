@@ -24,6 +24,14 @@
 #define TILE_X  248
 #define TILE_W  224
 #define TILE_H   80
+#define TILE_Y0  54
+#define TILE_Y1 140
+#define TILE_Y2 226
+
+// The standby screen has no second top-strip line (its address sits in a footer
+// instead), so its tiles rise by that line's height. That is also exactly what
+// frees the band the footer needs at the bottom.
+#define TILE_LIFT 14
 
 // Map an OPENEVSE_STATE_* value to a status word + accent colour (nightshift).
 const char *state_word(uint8_t evse_state, lv_color_t *colour);

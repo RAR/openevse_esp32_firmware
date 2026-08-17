@@ -4,7 +4,8 @@
 // throughout is one big number per region and generous colour separation:
 //
 //   y=6    clock (18px)                              status chips (18px)
-//   y=32   hostname / IP (14px)  -- or a transient message
+//   y=32   transient message (18px), when there is one -- the address is
+//          reference material and lives on the standby screen instead
 //   y=56   +--------------------------+  +-----------------------------+
 //          |  SoC ring (outer, 212)   |  |  tile 1   caption / value   |
 //          |  power ring (inner, 188) |  +-----------------------------+
@@ -69,8 +70,8 @@ static lv_obj_t *chip_row     = nullptr;  // flex row holding the status chips
 static lv_obj_t *chip_temp    = nullptr;
 static lv_obj_t *chip_wifi    = nullptr;
 static lv_obj_t *chip_car     = nullptr;
-static lv_obj_t *hostip_lbl   = nullptr;  // hostname / IP (top strip, second line)
-static lv_obj_t *msg_lbl      = nullptr;  // transient message, same line as hostip
+static lv_obj_t *hostip_lbl   = nullptr;  // address, only when show_hostip
+static lv_obj_t *msg_lbl      = nullptr;  // transient message (top strip, line 2)
 static lv_obj_t *tile_title[3] = {nullptr, nullptr, nullptr};
 static lv_obj_t *tile_value[3] = {nullptr, nullptr, nullptr};
 
@@ -266,9 +267,9 @@ void charge_screen_build()
   lv_obj_add_flag(soc_lbl, LV_OBJ_FLAG_HIDDEN);
 
   // --- Stat tiles (right column) ---
-  make_tile(scr, 0, 54);
-  make_tile(scr, 1, 140);
-  make_tile(scr, 2, 226);
+  make_tile(scr, 0, TILE_Y0);
+  make_tile(scr, 1, TILE_Y1);
+  make_tile(scr, 2, TILE_Y2);
 
   // New screen is now active; safe to delete the previous instance (theme rebuild).
   if(old) {

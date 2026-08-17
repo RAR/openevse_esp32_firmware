@@ -119,12 +119,14 @@ void standby_screen_build()
   chip_temp = make_chip(chip_row);
   chip_wifi = make_chip(chip_row);
 
-  // --- Top strip, line 2: hostname / IP ---
+  // --- Footer: hostname / IP, centred across the full width below everything ---
   hostip_lbl = lv_label_create(scr);
   lv_label_set_text(hostip_lbl, "");
   lv_obj_set_style_text_color(hostip_lbl, COL_DIM, 0);
   lv_obj_set_style_text_font(hostip_lbl, &lv_font_montserrat_14, 0);
-  lv_obj_align(hostip_lbl, LV_ALIGN_TOP_LEFT, 12, 34);
+  // No explicit width: BOTTOM_MID centres the label's own box, and the address
+  // is static, so there is no digit jitter to pin down here.
+  lv_obj_align(hostip_lbl, LV_ALIGN_BOTTOM_MID, 0, -6);
 
   // --- Ring (left) — same geometry as the charge screen's power ring ---
   arc = lv_arc_create(scr);
@@ -153,10 +155,12 @@ void standby_screen_build()
   lv_obj_set_style_text_font(state_lbl, &lv_font_montserrat_28, 0);
   lv_obj_align_to(state_lbl, arc, LV_ALIGN_CENTER, 0, 0);
 
-  // --- Totals (right) — same three slots the charge screen uses when idle ---
-  make_tile(scr, 0, 54,  "TODAY");
-  make_tile(scr, 1, 140, "THIS WEEK");
-  make_tile(scr, 2, 226, "LIFETIME");
+  // --- Totals (right) — the same three slots the charge screen uses when idle,
+  // lifted by the height of the second top-strip line this screen doesn't have
+  // (the address is in the footer), which is also what clears the footer band.
+  make_tile(scr, 0, TILE_Y0 - TILE_LIFT, "TODAY");
+  make_tile(scr, 1, TILE_Y1 - TILE_LIFT, "THIS WEEK");
+  make_tile(scr, 2, TILE_Y2 - TILE_LIFT, "LIFETIME");
 
   if (old) {
     lv_obj_del(old);
