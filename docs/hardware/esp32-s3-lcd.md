@@ -428,6 +428,70 @@ Consequences of that choice:
 
 Boot buttons: **SW1 = BOOT** (IO0), **SW2 = RESET** (EN).
 
+## First bring-up — what to check, and what not to chase
+
+None of this firmware has run on the hardware. Written while it was fresh, so the
+first person to power a board does not have to re-derive it.
+
+### Do not chase these — they are known board behaviour
+
+| Symptom | Cause |
+|---|---|
+| Backlight visibly dim at 100 % duty | v1.2 defect: `LEDA` on 3.3 V with the 120 Ω ballast. PWM still modulates. Firmware compensation is not the answer. |
+| WS2812 colours drift at low brightness | The `-MINI-V3/W` die is rated 3.5 V and runs on 3.3 V. Unreliable, not broken. |
+| No firmware log on the JP5 pads | Expected: `Serial` is USB CDC. JP5 carries ROM/bootloader output only. |
+| Firmware cannot tell USB from EVSE power | v1.2 has no sense line at all. `PWR_ST` is v1.3-only. |
+| No pilot voltage anywhere | There is no ADC on either revision. Pilot state comes over RAPI. |
+
+### Order of operations
+
+1. **Flash over USB-C** and watch the same cable (`pio device monitor`). If nothing
+   appears, put a UART adapter on JP5 — that carries ROM output and will show a boot
+   loop or a panic that CDC never gets a chance to report.
+2. **Panel.** The bus is unproven silicon-to-panel. If it misbehaves at init, the one
+   wiring choice that departs from the datasheet is pin 35 `RD` tied to GND. `TFT_RST`
+   is a real pin here, so the panel can be re-inited without a reboot — use that
+   rather than power-cycling.
+3. **RAPI.** If the controller link is dead, check the `RAPI_RX_PULLUP` path first:
+   without it IO2 floats and the port reads as silent. Confirm `TX1`/`RX1` did not get
+   "cleaned up" out of `platformio.ini` — the core's S3 fallback puts RX1 on IO15, the
+   backlight FET.
+4. **I²C.** MCP9808 at `0x18` and DS3231 at `0x68` on IO8/IO9. `[rtc] DS3231 found` in
+   the boot log means the driver is talking to it.
+5. **RTC.** Let it sync over NTP, pull power for a few minutes, and check the clock
+   survives. `[rtc] system clock seeded from RTC` on the next boot is the success
+   case. A flat or missing cell logs the oscillator-stop flag instead and must present
+   as *no* time, never as 1970.
+6. **SD.** `sd_status` in `/status` should read `mounted`. **First boot with a fresh
+   card creates a 32 MB file and that is the one slow step in this whole list** — time
+   it, and if it is unreasonable, `SDLOG_CAPACITY` is the knob. If the mount fails on a
+   card that works elsewhere, check R33/DAT3 before suspecting anything else.
+
+### Fallback paths worth deliberately breaking
+
+These are the paths that only run when something goes wrong, so they are the ones
+that will never get exercised by accident:
+
+- **Boot with an empty slot.** Should log to internal flash, `sd_status` = `no card`,
+  and `/energy` should still serve.
+- **Pull the card while it is running.** Next sample should go to flash, and it should
+  not retry the card afterwards.
+- **Boot with a card holding a half-written record.** Recovery should resume after the
+  last good record rather than restarting the ring. The unit tests cover the logic;
+  this proves the file layer agrees with them.
+
+### Measurements owed
+
+- **`SPI_FREQUENCY=80000000`.** Ships at 40 MHz. The result decides whether v1.3 needs
+  33 Ω series termination on `TFT_SCLK`/`TFT_MOSI` — there is none anywhere on the bus
+  today, and v1.3 is designed but not ordered, so that window shuts at fab. **Do not
+  backport a clock bump to the stock TFT board on the strength of an S3 result**: same
+  controller, different panel part and flex path.
+- **First-boot ring preallocation time**, as above.
+- **Internal-heap headroom at boot.** `SPIRAM_MALLOC_RESERVE_INTERNAL` is 0, so the
+  LVGL draw buffer competes with everything else. The `[panel] display up …` line
+  reports free internal heap; a failure there prints the largest free block.
+
 ## Minor deviation worth knowing
 
 Panel pin 35 `RD` is tied to **GND**; the datasheet asks for it to be fixed to IOVCC
