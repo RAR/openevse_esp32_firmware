@@ -157,10 +157,12 @@ what closes that hole.
 - **Boot:** `rtc_begin()` + `rtc_seed_system_time()` run in `setup()` *before*
   `timeManager.begin()` and well before the logger starts, so `time(NULL)` is already
   past the floor and the logger needs no special case.
-- **On sync:** `TimeManager::setTime()` writes back to the RTC, so the cell always
-  carries the freshest trusted value. Deliberately *not* the EVSE-sourced time in
-  `input.cpp`'s `handleRapiRead()` — that adopts the controller's clock whenever it
-  reads ahead, which is a weaker source than the backup cell should preserve.
+- **On sync:** `TimeManager::setTime()` writes back to the RTC (SNTP, `/time`, the
+  login-supplied time), and so does `input.cpp`'s `handleRapiRead()` when it adopts
+  the controller's clock. The controller is the weaker source — it is often the one
+  *we* set — but it is also the only one available in exactly the case the cell
+  exists for: WiFi down and NTP never answering. The floor check below is what keeps
+  an unset controller from laundering a 1970 into the cell.
 - **A dead or missing cell presents as "no time", never as 1970 or 2000-01-01.** The
   oscillator-stop flag is checked first, and the decoder rejects anything below the
   same floor. `RTC_TIME_VALID_FLOOR` and `TSDB_TIME_VALID_FLOOR` are held equal by a

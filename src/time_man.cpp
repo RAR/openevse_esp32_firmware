@@ -342,10 +342,9 @@ void TimeManager::setTime(struct timeval setTime, const char *source)
   // for the trusted sources -- SNTP here, plus the manual set (/time) and the
   // browser-supplied time at login, both of which arrive via time_set_time().
   //
-  // Deliberately NOT the EVSE-sourced time in input.cpp's handleRapiRead(): that
-  // path calls settimeofday() directly and adopts the controller's clock whenever
-  // it reads ahead of ours, which is a weaker source than the one the backup cell
-  // is meant to preserve. No-op on boards without an RTC.
+  // input.cpp's handleRapiRead() stores to the RTC separately, since it calls
+  // settimeofday() directly rather than coming through here. No-op on boards
+  // without an RTC.
   rtc_store_system_time(setTime.tv_sec);
 
   // Set the time on the OpenEVSE, set from the local time as this could take several ms
