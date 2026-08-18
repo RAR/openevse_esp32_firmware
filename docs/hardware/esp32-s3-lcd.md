@@ -25,6 +25,37 @@ external antenna (no PCB antenna).
 - Build config: `board_build.arduino.memory_type = qio_opi`, 16 MB flash,
   `-D BOARD_HAS_PSRAM`.
 
+### What the 8 MB of PSRAM is actually doing
+
+**It is not idle, and it is not something firmware assigns.** Arduino-ESP32 ships
+prebuilt IDF libraries, so `qio_opi/include/sdkconfig.h` is fixed and not editable
+from the app side. It sets:
+
+```
+CONFIG_SPIRAM_USE_MALLOC              1
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL   4096
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP  1
+CONFIG_SPIRAM_MODE_OCT / SPEED_80M
+```
+
+PSRAM is therefore part of the ordinary heap, and **every allocation of 4 KB or more
+goes there automatically** — TLS session buffers, Mongoose's connection and HTTP
+buffers, log staging, and (via `TRY_ALLOCATE_WIFI_LWIP`) the WiFi and lwIP pools.
+That is the memory headroom the `R8` part was bought for; it arrives by default
+rather than by code.
+
+Two consequences worth carrying:
+
+- **Anything that must be internal has to say so.** The LVGL draw buffer already
+  does — `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)` — because a
+  plain 30 KB `malloc()` would now land in PSRAM. Same rule for any future DMA buffer.
+- **`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is 0** in this config, so nothing is held
+  back for allocations that *must* be internal. Espressif ships it that way for every
+  Arduino S3 PSRAM board, so it is not ours to change — but it means internal-heap
+  exhaustion stays the failure mode to watch, and
+  `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` stays the metric, exactly as
+  on the ESP32 boards.
+
 ## Pin map
 
 | GPIO | Net | Function | Firmware notes |
@@ -50,8 +81,8 @@ external antenna (no PCB antenna).
 | 40 | `SD_D0` | microSD DAT0 | 10 kΩ pull-up |
 | 41 | `SD_CD` | card-detect switch | **active low, pull-up needed on v1.2** |
 | 42 | `TEMP_ALERT` | MCP9808 ALERT | open-drain, 10 kΩ pull-up, **active low** |
-| 43 | `S3_TXD0` | UART0 TX → JP5.5 | boot console; `DEBUG_PORT` |
-| 44 | `S3_RXD0` | UART0 RX ← JP5.4 | boot console; `DEBUG_PORT` |
+| 43 | `S3_TXD0` | UART0 TX → JP5.5 | ROM/bootloader console; `Serial0` in app |
+| 44 | `S3_RXD0` | UART0 RX ← JP5.4 | ROM/bootloader console; `Serial0` in app |
 | 47 | `AUX_TX` | UART2 TX → JP2.5 | 220 Ω series (R38) |
 | 48 | `AUX_RX` | UART2 RX ← JP2.4 | **pull-up needed on v1.2** |
 | EN | `RESET` | RESET button | 10 kΩ + 1 µF, also JP5.6 |
@@ -83,8 +114,9 @@ image working on both.
 Firmware applies this for `EVSE_RX` via `RAPI_RX_PULLUP` (see `src/debug.cpp`).
 It uses `gpio_set_pull_mode()`, **not `pinMode()`** — on Arduino-ESP32 3.x, `pinMode()`
 runs the peripheral manager and would detach the UART from the pin it was just
-configured on. `AUX_RX` and `SD_CD` need no handling yet because nothing opens UART2
-and the SD slot is unpopulated.
+configured on. `AUX_RX` and `SD_CD` are not handled yet only because nothing opens
+UART2 and there is no SD driver — `SD_CD`'s pull-up becomes load-bearing the moment
+one lands.
 
 ## I²C bus (IO8 SDA / IO9 SCL)
 
@@ -124,10 +156,19 @@ drain status pin, pulled low when VIN1 is not being used"*, and VIN1 is USB. So:
 versions. Driven by the same LVGL renderer as the stock TFT
 (`ENABLE_SCREEN_LVGL_TFT`, `src/lvgl_tft/`), over TFT_eSPI.
 
-- **Write-only.** `SDO` is deliberately open (datasheet: "leave the pin open when not
-  in use"), so the build sets **`TFT_MISO=-1`**. No register readback, no ID check, no
-  `0x04`/`0x09` handshake. TFT_eSPI keeps `-1` on the S3 (it only aliases MISO to MOSI
-  on the C3/S2) and passes it straight to `spi_bus_config_t`.
+- **`TFT_MISO=-1` is correct, but the bus is not "write-only".** In the strapped mode
+  the datasheet's own table reads `1 1 1 | 4-wire 8-bit data Serial Interface I |
+  SCL, SDA/SDO, D/CX, CSX` — `SDA/SDO` is **one combined pin**, and pin 34 `SDA` is
+  *"serial input or serial data input/output bi-direction."* **Readback returns on
+  SDA, not SDO**, so wiring the (open) `SDO` would have bought nothing, and no MISO
+  pin exists to give TFT_eSPI. TFT_eSPI keeps `-1` on the S3 (it only aliases MISO to
+  MOSI on the C3/S2) and passes it straight to `spi_bus_config_t`.
+
+  A bring-up ID check is therefore *possible*, just not through TFT_eSPI or
+  `esp_lcd`'s panel-IO layer: it is a half-duplex read on IO11 (`SPI_DEVICE_3WIRE`
+  drives MOSI bidirectionally), issued as a raw `spi_master` transaction **before**
+  the panel driver takes the bus. Worth having on hardware that has never been
+  powered on. Not implemented yet.
 - **No tearing sync** — `TE` is not connected.
 - **No touch** — the panel is behind a sealed cover; `XL`/`XR`/`YU`/`YD` are N/C, so
   `TOUCH_CS` is deliberately left undefined.
@@ -135,10 +176,18 @@ versions. Driven by the same LVGL renderer as the stock TFT
   the datasheet requires for unused-bus operation.
 - `RESET` on IO21 is independent of MCU reset — the panel can be re-inited without
   rebooting. (This was a v1.0.2 defect; don't assume the old behaviour.)
-- IO10/11/12 are the FSPI **IO_MUX** pins, so the bus bypasses the GPIO matrix and can
-  clock high. The build **starts at 40 MHz**; prove it on hardware before pushing to
-  80. TFT_eSPI's default port on the S3 is `SPI` = FSPI = SPI2, which is what these
-  pins belong to, so no `USE_HSPI_PORT`.
+- IO10/11/12 are the FSPI **IO_MUX** pins, so the bus bypasses the GPIO matrix and
+  can clock high — that was a deliberate board decision, not an accident. TFT_eSPI's
+  default port on the S3 is `SPI` = FSPI = SPI2, which is what these pins belong to,
+  so no `USE_HSPI_PORT`.
+- **The build ships 40 MHz and 80 MHz needs measuring on the first board.** The wire
+  format is 18 bpp (see below), so a full 15360-pixel draw buffer is 46 KB; at 40 MHz
+  (5 MB/s) that is **~9.2 ms of blocked CPU per flush**, ~92 ms for a full repaint.
+  80 MHz halves both. If it turns out marginal, that is the argument for 33 Ω series
+  termination on `TFT_SCLK`/`TFT_MOSI` in v1.3 — **there is none anywhere on the TFT
+  bus today**, and `TFT_MOSI` is 57.7 mm of board copper plus ~30 mm of flex tail
+  against a ~75 mm critical length. v1.3 is designed but not ordered, so that window
+  is open now and shuts at fab.
 
 ### ⚠ Backlight: broken on v1.2, fixed on v1.3
 
@@ -176,12 +225,32 @@ Moving them to 5 V is *not* available as a workaround: V<sub>IH</sub> would beco
 revision — **`WS2812B-MINI-V6`, `C52941386`, rated 3.3 V–5.3 V**, same package and
 same 1.9 mm height — but it is not applied to any BOM yet. Assume V3/W in hand.
 
-## microSD — **not populated**
+## microSD — fitted
 
-J2 (DM3AT-SF-PEJM5) is marked **DNP** on both versions. Wired for **SDMMC 1-bit**
-(CLK / CMD / D0, DAT3 held high by R33). No firmware support; if it is ever added,
-guard the mount behind card-detect and treat absence as normal. **v1.3** adds pull-ups
-on DAT1/DAT2 (R44/R45); neither reaches a GPIO on either version.
+**J2 (DM3AT-SF-PEJM5) and R33 are fitted** on both versions — `parts.py:65` has
+`DNP = {'JP5', 'JP6', 'J1'}` and J2 is not in it. Design doc §11: *"J2 and R33 are
+fitted — the microSD was asked for, and R33 is not optional alongside it."*
+IO38–41 are live pins, not documentation.
+
+Wired for **SDMMC 1-bit**: CLK IO38, CMD IO39, D0 IO40, CD IO41, with 10 kΩ pull-ups
+on CMD, D0 and DAT3.
+
+- **R33 is functional, not decoration.** It holds `DAT3` high. If `DAT3` floats low
+  during init the card latches into **SPI mode and never answers SDMMC**, which
+  presents as a dead socket on good hardware. Check this first if bring-up fails.
+- **1-bit is the only mode available.** DAT1/DAT2 reach no GPIO on either version.
+  (**v1.3** adds pull-ups on them, R44/R45, but still no GPIO.)
+- **Card-detect on IO41 is active low** and needs a pull-up: internal on v1.2,
+  external R42 on v1.3.
+- **A card swap requires opening the enclosure.** The socket mouth sits 1.46 mm
+  inboard and push-push needs a full card length of travel. Design for a card that
+  stays in, not one that gets rotated.
+- **Any write can be cut mid-flight.** There is no power-fail warning on this board,
+  and hold-up is ~400 µs against an SD card's 250 ms worst-case busy. This is not
+  fixable in hardware — the on-card format has to be survivable (fixed-size records,
+  sequence number, CRC; a torn record fails CRC and is skipped).
+
+No firmware support yet.
 
 ## Host interfaces
 
@@ -207,9 +276,20 @@ No auto-reset circuit — drive DTR/RTS yourself or use the buttons. This is UAR
 `DEBUG_PORT = Serial`.
 
 **USB-C (JP4)** — native USB-Serial-JTAG on IO19/20 behind a USBLC6-2SC6. CC1 and CC2
-have 5.1 kΩ pull-downs (sink only, no PD). Normal flashing path. The board builds with
-`ARDUINO_USB_MODE=1` and CDC-on-boot off, so `Serial` stays on UART0 and USB is the
-JTAG/flash interface.
+have 5.1 kΩ pull-downs (sink only, no PD). Normal flashing path.
+
+The board builds with `ARDUINO_USB_MODE=1` **and `ARDUINO_USB_CDC_ON_BOOT=1`**, so
+`Serial` — and therefore `DEBUG_PORT` — is the **USB CDC device**: flash and read logs
+over the one cable. Without CDC-on-boot, `Serial` would resolve to UART0 and you would
+flash over USB-C while getting no output on it, needing a UART adapter on JP5 (which
+has no auto-reset circuit).
+
+Consequences of that choice:
+
+- **UART0 is `Serial0`**, not `Serial`, if you ever want the JP5 pads from firmware.
+- **ROM and second-stage bootloader output still goes to the JP5 pads**, since CDC
+  only exists once the app is running. JP5 remains the place to watch a boot loop or
+  a panic before `setup()`.
 
 Boot buttons: **SW1 = BOOT** (IO0), **SW2 = RESET** (EN).
 
@@ -228,5 +308,6 @@ pio run -e openevse_s3_lcd_dev      # + debug flags, DEBUG_PORT on UART0
 ```
 
 Flash over USB-C (`pio run -e openevse_s3_lcd -t upload`), or OTA once it is on the
-network. Partition table is `openevse_16mb.csv`, the same 6 MB/6 MB dual-OTA layout
+network. `pio device monitor` on the same USB-C cable gives the firmware log
+(`DEBUG_PORT` = USB CDC); the JP5 pads carry ROM/bootloader output. Partition table is `openevse_16mb.csv`, the same 6 MB/6 MB dual-OTA layout
 the 16 MB WROOM and stock TFT boards use.

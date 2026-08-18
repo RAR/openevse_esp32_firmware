@@ -51,11 +51,27 @@ static bool bl_ready = false;
 static const uint16_t SCREEN_W = TFT_HEIGHT; // 480
 static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 
-// ONE partial buffer (~1/10 screen) in INTERNAL DRAM. Deliberately internal even
-// on boards that do have PSRAM (openevse_s3_lcd): without DMA the flush reads the
-// buffer with the CPU, so PSRAM would only make it slower, and 30 KB fits.
-// A single buffer is correct: no DMA means flush_cb blocks the CPU, so a second
-// buffer could never overlap a flush.
+// ONE partial buffer (~1/10 screen) in INTERNAL DRAM.
+//
+// Single-buffered because of the TFT_eSPI boundary noted above, not because of
+// anything about the ILI9488 or the S3: SPI_18BIT_DRIVER compiles the library's
+// whole DMA subsystem out (Processors/TFT_eSPI_ESP32.h -- ESP32_DMA is only defined
+// `#if !defined(TFT_PARALLEL_8_BIT) && !defined(SPI_18BIT_DRIVER)`), and
+// pushPixelsDMA() is hardwired to `trans.length = len * 16` regardless, while this
+// panel's path writes 3 bytes/pixel. DMA here would clock garbage into the panel.
+// So flush_cb blocks the CPU, and a second buffer could never overlap a flush.
+//
+// The MALLOC_CAP_INTERNAL below is load-bearing on PSRAM boards (openevse_s3_lcd),
+// not decorative: Arduino's prebuilt S3 sdkconfig sets SPIRAM_USE_MALLOC with
+// SPIRAM_MALLOC_ALWAYSINTERNAL=4096, so a plain malloc() of 30 KB would silently
+// land in PSRAM. The CPU reads this buffer (no DMA, see above), so PSRAM would only
+// be slower. See docs/hardware/esp32-s3-lcd.md for what PSRAM does carry.
+//
+// This also fixes the wire format: 18 bpp, with a CPU-side RGB565->RGB666 conversion
+// on every pixel. If the display link ever becomes the bottleneck, the fix is to port
+// this layer to esp_lcd (esp_lcd_ili9488 does the conversion AND DMA), not to patch
+// TFT_eSPI -- dmaHAL is private and initDMA() is compiled out, so it cannot be done
+// from the app side.
 static const uint32_t DRAW_BUF_PIXELS = SCREEN_W * 32; // 480*32 = 15360 px (~30 KB)
 
 static lv_disp_draw_buf_t draw_buf;
