@@ -29,6 +29,8 @@ typedef const __FlashStringHelper *fstr_t;
 #include "web_server.h"
 #ifdef ENABLE_TSDB
 #include "tsdb_energy_logger.h"
+#include "sd_card.h"
+#include "sdlog_store.h"
 #endif
 #include "web_server_static.h"
 #include "app_config.h"
@@ -654,6 +656,13 @@ void buildStatus(DynamicJsonDocument &doc) {
 #ifdef ENABLE_TSDB
   doc["tsdb_ready"] = tsdbEnergyLogger.isReady() ? 1 : 0;
   doc["tsdb_err"]   = tsdbEnergyLogger.initError();
+#endif
+#ifdef ENABLE_SD_CARD
+  // Which store is actually taking the samples, and why. On a board where the
+  // card lives behind a sealed enclosure, "is it logging to the card or has it
+  // quietly fallen back to flash?" is not answerable by looking at it.
+  doc["sd_status"] = sd_card_status();
+  doc["sd_log"]    = sdlog_store_ready() ? 1 : 0;
 #endif
   home_battery_add_status_fields(doc);
 

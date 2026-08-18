@@ -48,6 +48,8 @@
 #include "espal.h"
 #include "time_man.h"
 #include "rtc_ds3231.h"
+#include "sd_card.h"
+#include "sdlog_store.h"
 #include "tesla_client.h"
 #include "event.h"
 #include "ocpp.h"
@@ -180,6 +182,14 @@ void setup()
   // when the EVSE has been off and NTP has not answered yet. No-op elsewhere.
   rtc_begin();
   rtc_seed_system_time();
+
+  // The card is preferred over internal flash for the energy log when one is
+  // fitted, and is simply absent otherwise -- an empty slot must degrade to the
+  // existing tsdb path, not to no history at all. Must run before
+  // tsdbEnergyLogger.begin() so the logger knows which store it is writing to.
+  if(sd_card_begin()) {
+    sdlog_store_begin();
+  }
 
   timeManager.begin();
   DBUGF("After timeManager.begin: %d", ESPAL.getFreeHeap());

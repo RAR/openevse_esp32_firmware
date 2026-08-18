@@ -304,7 +304,34 @@ on CMD, D0 and DAT3.
   fixable in hardware — the on-card format has to be survivable (fixed-size records,
   sequence number, CRC; a torn record fails CRC and is skipped).
 
-No firmware support yet.
+### Firmware
+
+`ENABLE_SD_CARD`, `src/sd_card.*` (mount + presence) and `src/sdlog_store.*` (the
+log itself).
+
+**The card is preferred, not required.** With a card fitted the energy log lives on
+it; with an empty slot the existing internal-flash tsdb path is used unchanged. The
+two are never written together — one store owns the samples at a time, so doubling
+the wear would buy nothing. `/status` reports `sd_status` and `sd_log`, because on a
+board whose card sits behind a sealed enclosure, *"is it logging to the card or has
+it quietly fallen back to flash?"* is not answerable by looking at it.
+
+Fallback is also the runtime failure path: pulling a live card, or any write error,
+marks the store not-ready and the next sample goes to flash. It does not retry a
+broken card.
+
+Capacity is 1 048 576 records × 32 B = 32 MB, about two years at one sample a
+minute, against the internal tsdb's ~100 days in 2.5 MB. Holding more is the reason
+to use the card at all. The file is created at full size up front so every later
+write is an in-place overwrite rather than a growth that disturbs FAT metadata.
+
+`/energy` serves from whichever store is live, through a small cursor that dispatches
+between the two; the JSON is identical either way. Note the consequence: history
+written to a card stays on that card, and swapping cards swaps the history with it.
+
+The on-card format is `src/sdlog_record.*` and `src/sdlog_ring.*` — see the storage
+section above for why it carries a CRC and a sequence number when the internal path
+does not. Both are pure and host-tested; none of it is hardware-validated.
 
 ## Storage — where the energy history lives
 

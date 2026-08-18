@@ -6,6 +6,8 @@
 #include "debug.h"
 #include <LittleFS.h>
 #include <time.h>
+#include "sd_card.h"
+#include "sdlog_store.h"
 
 TsdbEnergyLogger tsdbEnergyLogger;
 
@@ -306,8 +308,29 @@ unsigned long TsdbEnergyLogger::loop(MicroTasks::WakeReason) {
 
       int16_t row[TSDB_NUM_COLS];
       tsdb_scale_sample(s, row);
-      esp_err_t e = tsdb_write((uint32_t)now, row);
-      if (e != ESP_OK) DBUGF("tsdb_write failed: %d", e);
+
+      // Prefer the card when one is fitted and healthy; fall back to internal
+      // flash otherwise. Not both -- writing each sample twice would double the
+      // wear for no benefit, since only one store answers queries at a time.
+      //
+      // The card branch compiles away entirely without ENABLE_SD_CARD, leaving
+      // the original tsdb_write() call and identical behaviour on the shipped
+      // boards.
+      bool logged = false;
+#ifdef ENABLE_SD_CARD
+      if (sd_card_poll() && sdlog_store_ready()) {
+        logged = sdlog_store_append((uint32_t)now, row);
+        if (!logged) {
+          // append() has already marked itself not-ready, so this falls through
+          // to flash now and stays there rather than retrying a broken card.
+          DBUGLN("card append failed, using internal flash for this sample");
+        }
+      }
+#endif
+      if (!logged) {
+        esp_err_t e = tsdb_write((uint32_t)now, row);
+        if (e != ESP_OK) DBUGF("tsdb_write failed: %d", e);
+      }
     }
   }
   return next_ms;
