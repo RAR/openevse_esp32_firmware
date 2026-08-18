@@ -293,6 +293,60 @@ on CMD, D0 and DAT3.
 
 No firmware support yet.
 
+## Storage — where the energy history lives
+
+The board design doc's §7 and the firmware disagree, and the disagreement is worth
+resolving on paper before anyone acts on either. §7 says:
+
+> **Do not use LittleFS for time series** — copy-on-write plus wear-levelling means
+> write amplification on every append, and there is no indexing. Use a raw partition
+> as a circular log of fixed-size records with a sequence number and CRC; a torn
+> record fails CRC and is skipped.
+
+`tsdb_energy_logger` writes `/littlefs/energy.tsdb` — a 2.5 MB ring, 1/min while
+charging and 1/5 min idle. Checked against what `components/esp_tsdb` actually does,
+**most of §7's prescription is already met and one part genuinely is not**:
+
+| §7 asks for | esp_tsdb | |
+|---|---|---|
+| circular log | 1024-byte blocks of fixed-size records, LRU eviction by index | ✅ |
+| fixed-size records | yes, `record_size` fixed at init | ✅ |
+| indexing | `tsdb_index.c` maintains a time index | ✅ — the "no indexing" objection is about a naive file, not this |
+| sequence number + CRC | `block_magic` only; **no CRC, no sequence** | ❌ |
+| raw partition | hosted on LittleFS | ❌ |
+
+So the open item is **torn-write survival**, not the ring structure. `block_magic`
+distinguishes a never-written block from a written one; it cannot distinguish a
+complete block from one cut in half. That matters more once P3-2 lands, because a
+card write can be interrupted at any point (~400 µs of hold-up against a 250 ms
+worst-case busy), and it is worth having regardless of where the bytes end up.
+
+Two things constrain the "move it to a raw partition" half:
+
+- **`tsdb_energy_logger` is shipped.** `openevse_wifi_tft_v1` and
+  `openevse_wifi_v1_16mb` both build with `ENABLE_TSDB` and are hardware-validated.
+  Changing the storage backend is not an S3-board change, and it carries a data
+  migration for units already holding history.
+- **`openevse_16mb.csv` is fully allocated** — app0 6 MB, app1 6 MB, spiffs 3.5 MB,
+  coredump 64 KB, ending exactly at 0x1000000. There is no room for a new raw
+  partition without repartitioning, which on shipped units means an OTA repartition.
+
+**Recommendation, in order:** add the sequence number and CRC to the record format
+first — it is the part that actually buys something, it is backend-independent, and
+it can be done without touching the partition table. Treat the raw-partition move as
+a separate question, driven by measured wear rather than by principle: at 1/min §7's
+own arithmetic gives ~10 years and 244 years of wear headroom, so LittleFS
+amplification is survivable either way on internal flash.
+
+**On internal flash vs. the card:** §7's numbers favour keeping the append path on
+internal flash — a 4 KB sector fills every 21 h at this cadence. The card is better
+suited to what you physically remove: bulk retention and offload. Nothing about
+P3-2 argues for moving the hot path onto it.
+
+Whichever way it goes, **update the other document.** Right now a reader who finds
+§7 first will conclude the firmware is wrong, and a reader who finds the firmware
+first will conclude §7 is stale. Neither is quite true.
+
 ## Host interfaces
 
 **JP1 — OpenEVSE RAPI** (JST-PH-6, mates with the controller's *FTDI Serial* header;
