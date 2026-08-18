@@ -457,6 +457,7 @@ unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
   d.power_kw          = _evse->getPower() / 1000.0f;
   d.pilot_a           = (int)_evse->getChargeCurrent();
   d.pilot_source      = pilot_source_name(_evse->getChargeCurrentClient());
+  d.max_a             = (int)_evse->getMaxConfiguredCurrent();
   d.volts             = _evse->getVoltage();
   d.amps              = _evse->getAmps();
   d.elapsed_s         = _evse->getSessionElapsed();

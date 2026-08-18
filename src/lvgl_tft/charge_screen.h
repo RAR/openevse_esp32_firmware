@@ -16,6 +16,10 @@ struct ChargeScreenData {
   bool     charging;          // evse_state == OPENEVSE_STATE_CHARGING
   float    power_kw;          // centre value when charging
   int      pilot_a;           // charge-current setpoint, shown under the ring
+  int      max_a;             // configured max charge current (the Charger settings
+                              // slider, not the hardware ceiling) -- the ring's
+                              // full scale. 0 = unknown, ring falls back to a
+                              // fixed scale.
   const char *pilot_source;   // what set pilot_a ("solar divert", "temp limit",
                               // ...); "" when no claim is active, i.e. the
                               // configured default. Set by lcd_lvgl's pilot_source_name().

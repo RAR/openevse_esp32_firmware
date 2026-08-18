@@ -40,7 +40,8 @@
 #define COL_DIM     NS_TEXTDIM
 #define COL_SOC     NS_SOC
 
-// Ring full-scale (amps). The ring is indicative, not a hard gauge.
+// Ring full-scale fallback (amps), used only when the configured max current is
+// not known. The ring is indicative, not a hard gauge.
 #define RING_FULL_SCALE_A 48.0f
 
 // Power-ring geometry (RING_*) and the tile column (TILE_*) come from
@@ -382,7 +383,11 @@ void charge_screen_update(const ChargeScreenData &d)
   // exactly the level it had been charging at -- indistinguishable from a
   // session still running. The ring is a flow gauge; when nothing is flowing it
   // should be empty. The pilot is still spelled out in text below it.
-  int ring = (int)(d.amps / RING_FULL_SCALE_A * 100.0f);
+  // Full scale is the configured max current, so a full ring means "at the limit
+  // you set" rather than some fixed number the user never chose: an 80 A unit
+  // configured to 47 A would otherwise never take the ring past ~59%.
+  float full_scale = (d.max_a > 0) ? (float)d.max_a : RING_FULL_SCALE_A;
+  int ring = (int)(d.amps / full_scale * 100.0f);
   if (ring < 0) ring = 0; else if (ring > 100) ring = 100;
   arc_set_animated(arc, ring);
 
