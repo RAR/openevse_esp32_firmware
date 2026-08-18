@@ -51,7 +51,9 @@ static bool bl_ready = false;
 static const uint16_t SCREEN_W = TFT_HEIGHT; // 480
 static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 
-// ONE partial buffer (~1/10 screen) in INTERNAL DRAM — this board has no PSRAM.
+// ONE partial buffer (~1/10 screen) in INTERNAL DRAM. Deliberately internal even
+// on boards that do have PSRAM (openevse_s3_lcd): without DMA the flush reads the
+// buffer with the CPU, so PSRAM would only make it slower, and 30 KB fits.
 // A single buffer is correct: no DMA means flush_cb blocks the CPU, so a second
 // buffer could never overlap a flush.
 static const uint32_t DRAW_BUF_PIXELS = SCREEN_W * 32; // 480*32 = 15360 px (~30 KB)

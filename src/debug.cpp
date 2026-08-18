@@ -1,6 +1,10 @@
 #include <StreamSpy.h>
 #include <cstdlib>  // for getenv
 
+#if defined(RAPI_RX_PULLUP) && !defined(EPOXY_DUINO)
+#include <driver/gpio.h>
+#endif
+
 #ifndef DEBUG_PORT
 #if defined(ESP32) || defined(DIVERT_SIM) || defined(EPOXY_DUINO)
 #define DEBUG_PORT Serial
@@ -53,5 +57,16 @@ void debug_setup()
   SerialDebug.begin(2048);
 
   RAPI_PORT.begin(115200);
+
+#if defined(RAPI_RX_PULLUP) && !defined(EPOXY_DUINO)
+  // Boards whose RAPI RX is level-shifted by a bare diode (anode on the GPIO) have
+  // nothing pulling the line back up: the controller drives it low through the
+  // diode and releases it to float. Without this the port reads as dead.
+  //
+  // gpio_set_pull_mode(), not pinMode(): on Arduino-ESP32 3.x pinMode() runs the
+  // peripheral manager, which would detach the UART we just attached to this pin.
+  gpio_set_pull_mode((gpio_num_t)RAPI_RX_PULLUP, GPIO_PULLUP_ONLY);
+#endif
+
   SerialEvse.begin(2048);
 }
