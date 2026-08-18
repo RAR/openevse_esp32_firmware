@@ -49,12 +49,23 @@ Two consequences worth carrying:
 - **Anything that must be internal has to say so.** The LVGL draw buffer already
   does — `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)` — because a
   plain 30 KB `malloc()` would now land in PSRAM. Same rule for any future DMA buffer.
-- **`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is 0** in this config, so nothing is held
-  back for allocations that *must* be internal. Espressif ships it that way for every
-  Arduino S3 PSRAM board, so it is not ours to change — but it means internal-heap
-  exhaustion stays the failure mode to watch, and
-  `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` stays the metric, exactly as
-  on the ESP32 boards.
+- **`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is 0** in this config, so no internal pool
+  is held back for allocations that *must* be internal. Espressif ships it that way for
+  every Arduino S3 PSRAM board, so it is not ours to change — but it means the draw
+  buffer competes with everything else on a fragmented heap, and its failure branch is
+  a real boot-time mode rather than a hypothetical. Internal-heap exhaustion stays the
+  thing to watch and `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` stays the
+  metric, exactly as on the ESP32 boards.
+
+`CONFIG_SPIRAM_MODE_OCT` and `CONFIG_SPIRAM_SPEED 80` in the same file are consistent
+with the N16R8's octal PSRAM at 80 MHz.
+
+**The design doc's §1 justifies the `R8` part by the LVGL framebuffer not fitting
+internally.** That is not how it plays out: the framebuffer stays internal
+deliberately (the flush is CPU-bound, so PSRAM would only be slower), and the PSRAM
+earns its place by absorbing the network stack automatically. The purchase is right
+either way — the stated reason belongs on the hardware side to update, not to be
+reasoned around here.
 
 ## Pin map
 

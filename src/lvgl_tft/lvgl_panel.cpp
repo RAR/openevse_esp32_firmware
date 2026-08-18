@@ -61,11 +61,10 @@ static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 // panel's path writes 3 bytes/pixel. DMA here would clock garbage into the panel.
 // So flush_cb blocks the CPU, and a second buffer could never overlap a flush.
 //
-// The MALLOC_CAP_INTERNAL below is load-bearing on PSRAM boards (openevse_s3_lcd),
-// not decorative: Arduino's prebuilt S3 sdkconfig sets SPIRAM_USE_MALLOC with
-// SPIRAM_MALLOC_ALWAYSINTERNAL=4096, so a plain malloc() of 30 KB would silently
-// land in PSRAM. The CPU reads this buffer (no DMA, see above), so PSRAM would only
-// be slower. See docs/hardware/esp32-s3-lcd.md for what PSRAM does carry.
+// Internal DRAM, and on PSRAM boards (openevse_s3_lcd) that is enforced rather than
+// assumed -- see the note at the heap_caps_malloc() call. PSRAM is not idle on those
+// boards; the SDK already routes the network stack into it. What it must not hold is
+// this buffer, which the CPU reads. docs/hardware/esp32-s3-lcd.md has the detail.
 //
 // This also fixes the wire format: 18 bpp, with a CPU-side RGB565->RGB666 conversion
 // on every pixel. If the display link ever becomes the bottleneck, the fix is to port
@@ -463,6 +462,13 @@ static bool lvgl_panel_prepare_begin(size_t buf_bytes)
 
   lv_init();
 
+  // MALLOC_CAP_INTERNAL is required, not a hint. On PSRAM boards a plain malloc()
+  // of ~30 KB is over the SDK's 4096-byte ALWAYSINTERNAL threshold and would be
+  // served from PSRAM -- which is exactly where the CPU-bound 3-byte-per-pixel
+  // flush must not read from. The failure branch is a real boot-time mode, not a
+  // formality: the SDK reserves no internal pool (SPIRAM_MALLOC_RESERVE_INTERNAL
+  // is 0), so this competes with everything else on a fragmented heap. Keep the
+  // largest-free-block report with it.
   buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if(buf1 == nullptr) {
     Serial.printf("[panel] FATAL: draw-buffer alloc failed (%u B internal); largest free block=%u\n",
