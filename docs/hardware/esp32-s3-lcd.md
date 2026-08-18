@@ -123,7 +123,7 @@ one lands.
 | Address | Device | Notes |
 |---|---|---|
 | `0x18` | MCP9808 temperature | A0/A1/A2 all tied GND; `ENABLE_MCP9808` |
-| `0x68` | DS3231MZ RTC | CR2032 backup on BT1; **no firmware support yet** |
+| `0x68` | DS3231MZ RTC | CR2032 backup on BT1; `ENABLE_DS3231`, `src/rtc_ds3231.*` |
 | — | Qwiic connector | external, 4-pin JST-SH |
 
 The MCP9808's `ALERT` is wired to IO42 on both versions; the firmware polls over I²C
@@ -131,7 +131,34 @@ and does not use it.
 
 The DS3231's `32KHZ` and `RST` are **not connected** on either version. Its `INT/SQW`
 is **not connected on v1.2 — poll it**; on **v1.3** it reaches IO17, so alarms and
-RTC-driven wake become available.
+RTC-driven wake become available. The driver polls and uses no alarms, so it works
+unchanged on both.
+
+### Why the RTC is not optional
+
+`tsdb_energy_logger` **discards every sample** until wall-clock passes
+`TSDB_TIME_VALID_FLOOR` (2023-11-14), because writing a pre-NTP epoch would corrupt
+the time index. This board is powered by the EVSE, so it loses power whenever the
+EVSE does — and the case that costs the most data is the one where WiFi is also down
+and NTP never answers. The coin cell (~225 mAh against the DS3231MZ's ~2.5 µA) is
+what closes that hole.
+
+- **Boot:** `rtc_begin()` + `rtc_seed_system_time()` run in `setup()` *before*
+  `timeManager.begin()` and well before the logger starts, so `time(NULL)` is already
+  past the floor and the logger needs no special case.
+- **On sync:** `TimeManager::setTime()` writes back to the RTC, so the cell always
+  carries the freshest trusted value. Deliberately *not* the EVSE-sourced time in
+  `input.cpp`'s `handleRapiRead()` — that adopts the controller's clock whenever it
+  reads ahead, which is a weaker source than the backup cell should preserve.
+- **A dead or missing cell presents as "no time", never as 1970 or 2000-01-01.** The
+  oscillator-stop flag is checked first, and the decoder rejects anything below the
+  same floor. `RTC_TIME_VALID_FLOOR` and `TSDB_TIME_VALID_FLOOR` are held equal by a
+  `static_assert`.
+
+The register codec is pure and host-tested (`test/test_rtc_ds3231/`, run under
+`native_test`) — it covers BCD validation, the 12-hour-mode read path, leap days,
+the century bit, and non-existent dates such as 31 February. None of it is
+hardware-validated yet.
 
 ## Power — v1.2 is blind, v1.3 is not
 
@@ -180,6 +207,12 @@ versions. Driven by the same LVGL renderer as the stock TFT
   can clock high — that was a deliberate board decision, not an accident. TFT_eSPI's
   default port on the S3 is `SPI` = FSPI = SPI2, which is what these pins belong to,
   so no `USE_HSPI_PORT`.
+- **The renderer is shared with the shipped stock TFT board.** `openevse_wifi_tft_v1`
+  and `openevse_s3_lcd` both pull in `${common.lvgl_tft_renderer_flags}`; there is no
+  separate S3 panel layer. Any rework of `src/lvgl_tft/lvgl_panel.cpp` lands on
+  hardware in the field unless it is conditioned on the board. Prove it on the S3
+  first — the stock board has no PSRAM to stage a second buffer in, and if a change
+  turns out marginal there, there is nothing to recall.
 - **The build ships 40 MHz and 80 MHz needs measuring on the first board.** The wire
   format is 18 bpp (see below), so a full 15360-pixel draw buffer is 46 KB; at 40 MHz
   (5 MB/s) that is **~9.2 ms of blocked CPU per flush**, ~92 ms for a full repaint.
@@ -188,6 +221,14 @@ versions. Driven by the same LVGL renderer as the stock TFT
   bus today**, and `TFT_MOSI` is 57.7 mm of board copper plus ~30 mm of flex tail
   against a ~75 mm critical length. v1.3 is designed but not ordered, so that window
   is open now and shuts at fab.
+
+  **Do not backport a clock bump to the stock board on the strength of an S3 result.**
+  80 MHz is available there in principle — its `TFT_MOSI=13` / `TFT_SCLK=14` /
+  `TFT_CS=15` are the ESP32-classic HSPI IO_MUX pins, so it bypasses the GPIO matrix
+  the same way — but that board is the QD354801 direct-solder 48-land part and this
+  one is an ER-TFT035-6 on FPC through a ZIF. Same controller, different trace lengths
+  and flex path. A DMA rework is a software risk that can be settled on a bench; a
+  clock bump on shipped hardware is a signal-integrity bet that cannot be taken back.
 
 ### ⚠ Backlight: broken on v1.2, fixed on v1.3
 

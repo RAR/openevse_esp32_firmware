@@ -72,6 +72,20 @@ static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 // this layer to esp_lcd (esp_lcd_ili9488 does the conversion AND DMA), not to patch
 // TFT_eSPI -- dmaHAL is private and initDMA() is compiled out, so it cannot be done
 // from the app side.
+//
+// !! THIS FILE IS SHARED WITH SHIPPED HARDWARE. !!
+// openevse_wifi_tft_v1 and openevse_s3_lcd both pull in lvgl_tft_renderer_flags;
+// there is no separate S3 panel layer. The constraint above is identical on both
+// (SPI_18BIT_DRIVER follows ILI9488_DRIVER, not the chip), so a DMA rework would pay
+// off on the stock board too -- but it must be conditioned on the board and proven on
+// the S3 first: the stock board has no PSRAM to stage a second buffer in, only ~320 KB
+// of internal heap already shared with WiFi and TLS, and it is in the field.
+// Treat a clock bump separately from the DMA rework. 80 MHz is available on the stock
+// board in principle (its TFT pins are the ESP32-classic HSPI IO_MUX set, so it also
+// bypasses the GPIO matrix), but that board is the QD354801 direct-solder part while
+// the S3 is an ER-TFT035-6 on FPC through a ZIF -- different trace lengths, different
+// flex path. A clean 80 MHz result on one is not evidence for the other, and on
+// shipped units there is no series termination to add and nothing to recall.
 static const uint32_t DRAW_BUF_PIXELS = SCREEN_W * 32; // 480*32 = 15360 px (~30 KB)
 
 static lv_disp_draw_buf_t draw_buf;

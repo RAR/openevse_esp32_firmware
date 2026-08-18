@@ -47,6 +47,7 @@
 #include "root_ca.h"
 #include "espal.h"
 #include "time_man.h"
+#include "rtc_ds3231.h"
 #include "tesla_client.h"
 #include "event.h"
 #include "ocpp.h"
@@ -173,6 +174,12 @@ void setup()
 
   eventLog.begin();
   DBUGF("After eventLog.begin: %d", ESPAL.getFreeHeap());
+
+  // Before timeManager, and before any consumer of wall-clock time: on boards with
+  // a battery-backed RTC this is what gets the clock past the tsdb validity floor
+  // when the EVSE has been off and NTP has not answered yet. No-op elsewhere.
+  rtc_begin();
+  rtc_seed_system_time();
 
   timeManager.begin();
   DBUGF("After timeManager.begin: %d", ESPAL.getFreeHeap());
