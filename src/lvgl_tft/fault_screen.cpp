@@ -9,6 +9,7 @@
 #include "nightshift.h"
 #include "screen_common.h"
 #include "fault_text.h"
+#include "mark_fault_img.h"
 #include "openevse.h"     // OPENEVSE_STATE_*
 
 // fault_text.h mirrors the controller's state codes so the copy can be tested
@@ -34,18 +35,27 @@ static_assert(FAULT_STATE_EEPROM_FAILURE       == OPENEVSE_STATE_EEPROM_FAILURE,
 #define COL_DIM   NS_TEXTDIM
 #define COL_FAULT NS_ERROR
 #define COL_RULE  NS_BORDER
+#define COL_ACCENT NS_ACCENT
 
 // Left margin shared by every row, so the title, the rule, the sentence and the
 // steps all hang off one edge.
 #define PAD_X      20
 #define BODY_W    (480 - PAD_X * 2)
 
-#define TITLE_Y    14
-#define RULE_Y     60
-#define WHAT_Y     72
-// Three wrapped lines of "what" at montserrat_16 reach ~132; start the steps
+// The charge point mark carrying the alert glyph, at the artwork's 64 px floor
+// -- below that the cord and plug thin out to nothing. It sets the height of
+// the title row, and the title hangs off its right edge.
+#define MARK_PX    64
+#define MARK_Y      6
+#define TITLE_X    (PAD_X + MARK_PX + 16)
+// Centred on the mark rather than on the row: montserrat_28 is about 28 px of
+// cap height against the mark's 64.
+#define TITLE_Y    (MARK_Y + (MARK_PX - 28) / 2)
+#define RULE_Y     (MARK_Y + MARK_PX + 12)
+#define WHAT_Y     (RULE_Y + 12)
+// Three wrapped lines of "what" at montserrat_16 reach ~60 px; start the steps
 // below that so the block never depends on how long a particular sentence is.
-#define STEPS_Y   146
+#define STEPS_Y   (WHAT_Y + 72)
 #define STEP_DY    28
 
 static lv_obj_t *fault_scr = nullptr;
@@ -72,12 +82,28 @@ void fault_screen_build()
   lv_obj_set_style_bg_color(fault_scr, COL_BG, 0);
   lv_obj_clear_flag(fault_scr, LV_OBJ_FLAG_SCROLLABLE);
 
-  // --- Title: warning glyph + the fault's own name ---
+  // --- The mark, wearing the alert glyph ---
+  // Two stacked masks on one origin. img_recolor_opa is not optional: LVGL reads
+  // img_recolor only when the opa is above zero, and otherwise draws an A8 mask
+  // in black.
+  lv_obj_t *mark_shell = lv_img_create(fault_scr);
+  lv_img_set_src(mark_shell, &mark_fault_shell_img);
+  lv_obj_set_style_img_recolor(mark_shell, COL_ACCENT, 0);
+  lv_obj_set_style_img_recolor_opa(mark_shell, LV_OPA_COVER, 0);
+  lv_obj_align(mark_shell, LV_ALIGN_TOP_LEFT, PAD_X, MARK_Y);
+
+  lv_obj_t *mark_alert = lv_img_create(fault_scr);
+  lv_img_set_src(mark_alert, &mark_fault_alert_img);
+  lv_obj_set_style_img_recolor(mark_alert, COL_FAULT, 0);
+  lv_obj_set_style_img_recolor_opa(mark_alert, LV_OPA_COVER, 0);
+  lv_obj_align(mark_alert, LV_ALIGN_TOP_LEFT, PAD_X, MARK_Y);
+
+  // --- Title: the fault's own name, beside the mark ---
   title_lbl = lv_label_create(fault_scr);
   lv_label_set_text(title_lbl, "");
   lv_obj_set_style_text_color(title_lbl, COL_FAULT, 0);
   lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_28, 0);
-  lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, PAD_X, TITLE_Y);
+  lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, TITLE_X, TITLE_Y);
 
   // --- Rule, separating the name from the explanation ---
   lv_obj_t *rule = lv_obj_create(fault_scr);
@@ -118,8 +144,7 @@ void fault_screen_update(const FaultScreenData &d)
 
   const FaultText *f = fault_text(d.evse_state);
   if(f) {
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "  %s", f->title);
-    lv_label_set_text(title_lbl, buf);
+    lv_label_set_text(title_lbl, f->title);
     lv_label_set_text(what_lbl, f->what);
     for(int i = 0; i < FAULT_STEPS_MAX; i++) {
       if(f->steps[i]) {
@@ -134,7 +159,7 @@ void fault_screen_update(const FaultScreenData &d)
     // The caller only loads this screen for a fault, so this is a caller bug
     // rather than a state to render. Say so plainly instead of showing an empty
     // page that looks like the fault cleared.
-    lv_label_set_text(title_lbl, LV_SYMBOL_WARNING "  FAULT");
+    lv_label_set_text(title_lbl, "FAULT");
     lv_label_set_text(what_lbl, "The charger reported a fault this firmware does not recognise.");
     for(int i = 0; i < FAULT_STEPS_MAX; i++) {
       lv_obj_add_flag(step_lbl[i], LV_OBJ_FLAG_HIDDEN);
