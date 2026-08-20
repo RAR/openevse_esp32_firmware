@@ -63,6 +63,7 @@
 // Each size is ~10-25 KB of flash; the 16 MB partition is at ~34%, so the trade
 // is worth it. Revisit only if a 4 MB build ever needs this env.
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_16 1  // fault screen body: 46-char lines need 16, not 18
 #define LV_FONT_MONTSERRAT_18 1
 #define LV_FONT_MONTSERRAT_20 1
 #define LV_FONT_MONTSERRAT_28 1
