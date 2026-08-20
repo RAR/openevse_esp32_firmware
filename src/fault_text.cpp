@@ -2,6 +2,10 @@
 // openevse.h.
 //
 // House style for the copy, so later additions match:
+//  - Titles are title case, not the ring's shouting capitals: this is a heading
+//    read at arm's length at 28 px, where all-caps costs legibility and gains
+//    nothing. Acronyms stay up (PP, GFCI, EEPROM). state_word() keeps its caps
+//    for the compact status word inside the ring.
 //  - "what" states what happened and, where it matters, whether charging can
 //    resume on its own. No jargon the person at the charger cannot act on.
 //  - "steps" are ordered most-likely-to-help first, and are things a non-
@@ -17,73 +21,73 @@
 #include <stddef.h>
 
 static const FaultText FAULTS[] = {
-  { "VENT REQUIRED",
+  { "Vent Required",
     "The vehicle asked for a ventilated area. This charger cannot provide one, so charging stopped.",
     { "Unplug the vehicle, then plug it back in",
       "Check the cable and connector for damage",
       "If it keeps happening, have it checked" } },
 
-  { "DIODE CHECK",
+  { "Diode Check",
     "The vehicle's pilot diode was not detected. Charging is blocked as a safety check.",
     { "Unplug the vehicle, then plug it back in",
       "Inspect the connector for damage or moisture",
       "Try another cable or another vehicle" } },
 
-  { "GFCI TRIP",
+  { "GFCI Trip",
     "A ground fault was detected and charging stopped. The charger will retry on its own.",
     { "Unplug the vehicle",
       "Check the inlet and connector for water",
       "If it repeats, stop and call an electrician" } },
 
-  { "NO GROUND",
+  { "No Ground",
     "No earth ground was found on the supply. The charger will not deliver power without one.",
     { "Do not use the charger until this is fixed",
       "Have an electrician check the circuit ground",
       "This is wiring, not the vehicle or the cable" } },
 
-  { "STUCK RELAY",
+  { "Stuck Relay",
     "The contactor did not open when told to. Power may still be present at the connector.",
     { "Switch the circuit off at the breaker",
       "Do not plug in a vehicle",
       "The charger needs service before further use" } },
 
-  { "GFCI SELF TEST",
+  { "GFCI Self-Test",
     "The ground-fault self-test failed at start-up, so that protection cannot be trusted.",
     { "Switch the charger off, wait, switch it on",
       "Do not use it if the test fails again",
       "A repeat failure means it needs service" } },
 
-  { "OVER TEMP",
+  { "Over Temp",
     "The charger is too hot and stopped to protect itself. It resumes once it cools.",
     { "Clear anything blocking the vents",
       "Shade it from direct sun if you can",
       "If it repeats when cool, have it checked" } },
 
-  { "OVER CURRENT",
+  { "Over Current",
     "The vehicle drew more current than was offered, so charging stopped.",
     { "Unplug the vehicle, then plug it back in",
       "Lower the max current in Charger settings",
       "If it repeats, have the vehicle checked" } },
 
-  { "RELAY FAULT",
+  { "Relay Fault",
     "The contactor did not respond as commanded when charging was starting.",
     { "Switch the charger off, wait, switch it on",
       "If it repeats, the contactor needs service",
       "Do not leave it charging unattended" } },
 
-  { "EEPROM FAIL",
+  { "EEPROM Failure",
     "The charger could not read or write its stored settings.",
     { "Switch the charger off, wait, switch it on",
       "Check the settings are still correct",
       "If it repeats, the controller needs service" } },
 
-  { "PP MISSING",
+  { "PP Missing",
     "The cable's proximity pilot was not detected, so its current rating is unknown.",
     { "Reseat the cable at the charger socket",
       "Inspect both ends for bent or dirty pins",
       "Try a different cable" } },
 
-  { "PP SHORTED",
+  { "PP Shorted",
     "The cable's proximity pilot line reads as shorted.",
     { "Unplug the cable at both ends",
       "Look for damage or moisture in the socket",

@@ -36,7 +36,8 @@
 #define FAULT_STEPS_MAX   3
 
 struct FaultText {
-  const char *title;                  // matches state_word()'s name for the state
+  const char *title;                  // the fault's name, title case (see the
+                                      // house style note in fault_text.cpp)
   const char *what;                   // one or two sentences: what happened
   const char *steps[FAULT_STEPS_MAX]; // what to do, most likely to help first;
                                       // unused slots are NULL
