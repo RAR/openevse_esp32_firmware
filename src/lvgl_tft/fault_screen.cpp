@@ -48,9 +48,9 @@ static_assert(FAULT_STATE_EEPROM_FAILURE       == OPENEVSE_STATE_EEPROM_FAILURE,
 #define MARK_PX    64
 #define MARK_Y      6
 #define TITLE_X    (PAD_X + MARK_PX + 16)
-// Centred on the mark rather than on the row: montserrat_28 is about 28 px of
+// Centred on the mark rather than on the row: montserrat_32 is about 32 px of
 // cap height against the mark's 64.
-#define TITLE_Y    (MARK_Y + (MARK_PX - 28) / 2)
+#define TITLE_Y    (MARK_Y + (MARK_PX - 32) / 2)
 #define RULE_Y     (MARK_Y + MARK_PX + 12)
 #define WHAT_Y     (RULE_Y + 12)
 // Three wrapped lines of "what" at montserrat_16 reach ~60 px; start the steps
@@ -102,7 +102,7 @@ void fault_screen_build()
   title_lbl = lv_label_create(fault_scr);
   lv_label_set_text(title_lbl, "");
   lv_obj_set_style_text_color(title_lbl, COL_FAULT, 0);
-  lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_32, 0);
   lv_obj_align(title_lbl, LV_ALIGN_TOP_LEFT, TITLE_X, TITLE_Y);
 
   // --- Rule, separating the name from the explanation ---

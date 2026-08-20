@@ -27,9 +27,10 @@
 #define FAULT_STATE_PP_MISSING           16
 #define FAULT_STATE_EEPROM_FAILURE       17
 
-// Layout budget, in characters, for the 480x320 panel at montserrat_16. The
-// unit test enforces these so over-long copy fails on the host rather than
-// silently clipping or wrapping on the glass.
+// Layout budget, in characters, for the 480x320 panel. The unit test enforces
+// these so over-long copy fails on the host rather than silently clipping or
+// wrapping on the glass. The title is set at montserrat_32 beside a 64 px mark,
+// the body at montserrat_16 across the full width.
 #define FAULT_TITLE_MAX  16
 #define FAULT_WHAT_MAX  140   // wraps to at most three lines at 44 ch
 #define FAULT_STEP_MAX   46   // one line each, never wrapped
