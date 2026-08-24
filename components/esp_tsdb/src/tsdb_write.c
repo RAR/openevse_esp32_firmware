@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 static const char *TAG = "TSDB_WRITE";
 
@@ -37,6 +38,9 @@ esp_err_t tsdb_read_block(tsdb_t *db, uint32_t block_num, tsdb_block_t *block) {
 
 /**
  * @brief Write a data block to file
+ *
+ * Returns ESP_ERR_NO_MEM specifically when the filesystem is full (ENOSPC),
+ * so the caller can adapt capacity and retry via LRU eviction.
  */
 esp_err_t tsdb_write_block(tsdb_t *db, uint32_t block_num, const tsdb_block_t *block) {
     if (db == NULL || db->file == NULL || block == NULL) {
@@ -46,12 +50,21 @@ esp_err_t tsdb_write_block(tsdb_t *db, uint32_t block_num, const tsdb_block_t *b
     uint32_t block_offset = tsdb_calc_block_offset(&db->header, block_num);
 
     fseek(db->file, block_offset, SEEK_SET);
+    errno = 0;
     size_t written = fwrite(block, TSDB_BLOCK_SIZE, 1, db->file);
+    int write_errno = errno;
     fflush(db->file);
     fsync(fileno(db->file));
 
     if (written != 1) {
-        ESP_LOGE(TAG, "Failed to write block %lu", (unsigned long)block_num);
+        if (write_errno == ENOSPC) {
+            ESP_LOGW(TAG, "Block %lu write: filesystem full (ENOSPC)",
+                     (unsigned long)block_num);
+            clearerr(db->file);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGE(TAG, "Failed to write block %lu (errno=%d)",
+                 (unsigned long)block_num, write_errno);
         return ESP_FAIL;
     }
 
@@ -76,7 +89,56 @@ esp_err_t tsdb_write_h(tsdb_t *db, uint32_t timestamp, const int16_t *values) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(db->mutex, portMAX_DELAY);
+    // Fail fast during a schema migration or close instead of stalling on the
+    // mutex for the full lock timeout. Caller may retry on its next cadence.
+    if (db->migrating || db->closing) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Take the handle lock for the whole write. The mutex is recursive, so a
+    // task already holding it (e.g. during a query) can still write. Taken
+    // ONCE here -- the retry_write path below does not re-take it.
+    // OPEN variant: a closer may have won the mutex while we were blocked —
+    // the handle is parked (not freed) in that case, so we must re-check.
+    TSDB_LOCK_OPEN_OR_RETURN(db, 5000, ESP_ERR_TIMEOUT);
+
+    // PROACTIVE capacity cap (free-space guard, see esp_tsdb.h): if the file
+    // is still in its growth phase and the NEXT record starts a new block —
+    // the only point the data file grows — check the filesystem reserve and
+    // switch to ring/LRU reuse BEFORE breaching it. Waiting for the hard
+    // ENOSPC below means the filesystem is already at zero free, where
+    // copy-on-write filesystems (littlefs) fail every OTHER file's writes
+    // too (fault ring, settings audit, energy json on the dongle).
+    if (db->free_space_cb && db->min_free_bytes > 0 &&
+        !db->capacity_adapted && db->header.max_records > 0 &&
+        db->header.total_records > 0 &&
+        db->header.total_records < db->header.max_records &&
+        (db->header.total_records % db->header.records_per_block) == 0) {
+        uint64_t free_now = db->free_space_cb();
+        if (free_now < db->min_free_bytes) {
+            uint32_t old_max = db->header.max_records;
+            db->header.max_records = db->header.total_records;
+            db->capacity_adapted = true;
+            ESP_LOGW(TAG, "Free space %llu below reserve %lu: capping %lu -> %lu records (LRU from now on)",
+                     (unsigned long long)free_now,
+                     (unsigned long)db->min_free_bytes,
+                     (unsigned long)old_max,
+                     (unsigned long)db->header.max_records);
+            // Persisting the cap matters across reboots: a stale on-disk max
+            // resumes growth into the reserve on the next open. At the reserve
+            // boundary littlefs COW can fail even this in-place 512B rewrite,
+            // so retry once and shout if it still fails (the in-memory cap
+            // holds for this power cycle regardless).
+            if (tsdb_write_header(db->file, &db->header) != ESP_OK &&
+                tsdb_write_header(db->file, &db->header) != ESP_OK) {
+                ESP_LOGE(TAG, "Capacity-cap header persist FAILED — cap is "
+                              "in-memory only until the next successful header write");
+            }
+        }
+    }
+
+retry_write:
+    {}  // label target — allow re-entry after adaptive shrink
 
     // Calculate record index (ring buffer or unlimited)
     bool unlimited = (db->header.max_records == 0);
@@ -140,9 +202,33 @@ esp_err_t tsdb_write_h(tsdb_t *db, uint32_t timestamp, const int16_t *values) {
 
     // Write block back to file
     ret = tsdb_write_block(db, block_num, block);
+    if (ret == ESP_ERR_NO_MEM && !is_eviction && !db->capacity_adapted &&
+        db->header.total_records > 0) {
+        // Filesystem full while still growing. Cap max_records to what we've
+        // already written so future writes reuse existing blocks via LRU
+        // instead of allocating new ones. Header rewrite is in-place (512 bytes)
+        // so it doesn't need new space.
+        uint32_t old_max = db->header.max_records;
+        db->header.max_records = db->header.total_records;
+        db->capacity_adapted = true;
+        ESP_LOGW(TAG, "Adaptive capacity: %lu -> %lu records (LRU from now on)",
+                 (unsigned long)old_max,
+                 (unsigned long)db->header.max_records);
+        // Persist the new cap. If this fails we still retry - the in-memory
+        // header is authoritative for the retry path. The lock is still held
+        // (recursive mutex, taken once above); the retry does not re-take it.
+        // Header persist failure here is likely (we JUST hit ENOSPC) — retry
+        // once and log loudly; a stale on-disk max resumes growth next boot.
+        if (tsdb_write_header(db->file, &db->header) != ESP_OK &&
+            tsdb_write_header(db->file, &db->header) != ESP_OK) {
+            ESP_LOGE(TAG, "ENOSPC-cap header persist FAILED — cap is "
+                          "in-memory only until the next successful header write");
+        }
+        goto retry_write;
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write block");
-        xSemaphoreGive(db->mutex);
+        tsdb_unlock(db);
         return ret;
     }
 
@@ -191,8 +277,12 @@ esp_err_t tsdb_write_h(tsdb_t *db, uint32_t timestamp, const int16_t *values) {
         db->header.oldest_timestamp = timestamp;
     }
 
-    // Update sparse index if at stride boundary
-    if (record_idx % db->header.index_stride == 0) {
+    // Update sparse index if at stride boundary. Bounds-guarded: after a
+    // tsdb_resize() grow, record_idx can exceed the capacity the index was
+    // sized for at creation — an unguarded write here would land PAST the
+    // preallocated index region, inside the first data blocks.
+    if (record_idx % db->header.index_stride == 0 &&
+        (record_idx / db->header.index_stride) < db->header.index_entries) {
         uint32_t index_entry_num = record_idx / db->header.index_stride;
         tsdb_index_entry_t entry = {
             .timestamp = timestamp,
@@ -220,7 +310,7 @@ esp_err_t tsdb_write_h(tsdb_t *db, uint32_t timestamp, const int16_t *values) {
              (unsigned long)db->header.total_records,
              (unsigned long)db->header.newest_timestamp);
 
-    xSemaphoreGive(db->mutex);
+    tsdb_unlock(db);
     return ESP_OK;
 }
 
