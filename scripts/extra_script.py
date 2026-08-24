@@ -316,3 +316,47 @@ headers_src = join(env.subst("$PROJECTSRC_DIR"), "lcd_static")
 process_html_app(lcd_gui_dir, headers_src, env, "lcd_gui", make_static_lcd)
 
 print("PATH="+env['ENV']['PATH'])
+
+#
+# Drop the Bluetooth high-level-interrupt vectors.
+#
+# The prebuilt Arduino framework is compiled with CONFIG_BT_ENABLED=y, and its
+# shared ld_flags force-include `ld_include_hli_vectors_bt`. That pulls
+# libbt.a(hli_vectors.S.obj) into the link, costing **4,380 bytes of static
+# DRAM** for high-level interrupt vector stacks that only do anything while the
+# BT controller is running. This firmware never starts BT: no BluetoothSerial,
+# no BLE, no NimBLE.
+#
+# Dropping the -u leaves the rest of libbt alone. bt.c is still pulled in via
+# Arduino's esp32-hal-bt.c for esp_bt_controller_mem_release(), which is what
+# returns the ~56 KB BT controller region to the heap at boot -- that reclaim
+# is unaffected and still happens.
+#
+# Filtered here rather than by editing the framework's ld_flags file, which is
+# shared by every env and is overwritten whenever the package is reinstalled.
+_BT_HLI_SYMBOL = "ld_include_hli_vectors_bt"
+
+
+def _strip_bt_hli_vectors(env):
+    flags = list(env["LINKFLAGS"])
+    out = []
+    i = 0
+    while i < len(flags):
+        flag = flags[i]
+        # Arrives either as the pair ("-u", "sym") or as one joined token.
+        if flag == "-u" and i + 1 < len(flags) and flags[i + 1] == _BT_HLI_SYMBOL:
+            i += 2
+            continue
+        if _BT_HLI_SYMBOL in flag:
+            i += 1
+            continue
+        out.append(flag)
+        i += 1
+    if len(out) != len(flags):
+        env.Replace(LINKFLAGS=out)
+        print("Dropped BT high-level-interrupt vectors: ~4.3 KB DRAM recovered")
+    else:
+        print("Note: %s not in LINKFLAGS; BT vectors not dropped" % _BT_HLI_SYMBOL)
+
+
+_strip_bt_hli_vectors(env)
