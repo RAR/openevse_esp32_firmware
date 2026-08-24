@@ -20,18 +20,28 @@
 // on this board, so it competes directly with the WiFi/TLS/Mongoose stack and
 // the ~30 KB draw buffer.
 #define LV_MEM_CUSTOM 0
-// 32 KB. This was cut to 24 KB on the strength of a measured 8.6 KB peak
-// (lv_used_max in /status) with the previous, sparser charge screen. The
-// reworked screen carries noticeably more: a second arc, three tile containers
-// and roughly half again as many labels, so that measurement no longer bounds
-// this build.
+// 24 KB. Sized by measurement, from the host screenshot harness
+// (`pio run -e native_openevse_lvgl` + `--dump-lvgl-screens`), which walks all
+// 19 screens INCLUDING the boot->setup transition where two screens are
+// briefly live at once. It links this same lv_conf.h with the same builtin
+// allocator, and its 9,917 B peak matches the device's `lv_used_max` of 30%
+// of 32 KB exactly, so it is a faithful proxy.
 //
-// 32 KB is the interim value until lv_used_max has been re-read on hardware
-// across a screen transition (LVGL peaks while both screens are briefly live).
-// Erring high on purpose: undersizing does not fail gracefully -- LVGL answers
-// pool exhaustion with an assert loop that the task watchdog turns into a
-// reboot -- and this runs on the live charger. Trim once measured.
-#define LV_MEM_SIZE (32U * 1024U)
+// Peak usage is NOT the binding constraint -- largest contiguous block is.
+// The setup screen's QR canvas (lv_qrcode_create(card, 184, ...),
+// setup_screen.cpp:39) needs ~4.2 KB in one piece while the boot screen is
+// still allocated. Measured results, all 19 screens:
+//
+//   16 KB -> FAILS at wifi-setup (free_biggest 6,320 B, fragmented)
+//   20 KB -> FAILS at wifi-setup (free_biggest 3,088 B)
+//   24 KB -> passes, worst 68% used, free_biggest never below 6.9 KB
+//   32 KB -> passes, worst 52% used (the previous value)
+//
+// Undersizing does not fail gracefully -- LVGL answers pool exhaustion with an
+// assert loop that the task watchdog turns into a reboot -- so re-run the
+// harness before trimming further, and do not size this from `lv_used_max`
+// alone. Re-measure whenever a screen gains widgets.
+#define LV_MEM_SIZE (24U * 1024U)
 
 // Tick from Arduino millis() on-device. The native/EpoxyDuino host build advances
 // LVGL explicitly from lcd_lvgl.cpp so the C-only LVGL sources don't need to
