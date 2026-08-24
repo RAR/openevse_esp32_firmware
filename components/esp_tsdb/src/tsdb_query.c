@@ -14,6 +14,49 @@ static const char *TAG = "TSDB_QUERY";
 // QUERY OPERATIONS
 // ============================================================================
 
+/**
+ * @brief Binary-search the ring for the first retained record with
+ *        ts >= query->start_time, in logical (time-ascending) order.
+ *
+ * The ring walk from oldest_record_idx is time-ascending by construction, so
+ * logical positions are binary-searchable even after the ring wraps (unlike
+ * the sparse index, whose entries are slot-ordered post-wrap). This replaces
+ * an O(n) scan-to-window with O(log n) block reads — on a year-full database
+ * a "last 24h" chart query drops from ~3400 block reads to ~17.
+ *
+ * Relies on the same timestamp monotonicity the iterator's early-exit
+ * (ts > end_time) already assumes.
+ *
+ * @return Logical position k in [0, available] of the first record in range;
+ *         0 (= start from the oldest, plain full walk) on any probe anomaly.
+ */
+static uint32_t tsdb_seek_start(tsdb_query_t *query, uint32_t available,
+                                uint32_t first_slot, bool unlimited) {
+    uint16_t rpb = query->header.records_per_block;
+    uint32_t lo = 0, hi = available;   // invariant: ts(lo-1) < start_time <= ts(hi)
+
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        uint32_t slot = unlimited ? mid :
+                        ((first_slot + mid) % query->header.max_records);
+
+        if (tsdb_read_block(query->db, slot / rpb, query->block_buffer) != ESP_OK) {
+            return 0;   // truncation/corruption — fall back to the full walk
+        }
+        uint32_t ts = TSDB_BLOCK_TS((uint8_t *)query->block_buffer, slot % rpb);
+        if (ts == 0) {
+            return 0;   // unexpected hole — fall back to the full walk
+        }
+
+        if (ts < query->start_time) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
 esp_err_t tsdb_query_init_h(tsdb_t *db,
                             tsdb_query_t *query,
                             uint32_t start_time,
@@ -25,8 +68,21 @@ esp_err_t tsdb_query_init_h(tsdb_t *db,
         return ESP_ERR_INVALID_STATE;
     }
 
+    // Fail fast during a schema migration or close instead of stalling on
+    // the mutex.
+    if (db->migrating || db->closing) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Take the handle lock for the entire query lifecycle. Released by
+    // tsdb_query_close(). CRITICAL: callers MUST call tsdb_query_close()
+    // even on early-exit / error paths or the lock leaks. The mutex is
+    // recursive so the same task can also do writes.
+    TSDB_LOCK_OPEN_OR_RETURN(db, 5000, ESP_ERR_TIMEOUT);
+
     if (start_time > end_time) {
         ESP_LOGE(TAG, "Invalid time range: start > end");
+        tsdb_unlock(db);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -57,6 +113,7 @@ esp_err_t tsdb_query_init_h(tsdb_t *db,
         query->num_params_to_fetch = num_params_to_fetch;
         if (num_params_to_fetch > TSDB_MAX_PARAMS) {
             ESP_LOGE(TAG, "Too many parameters requested: %d", num_params_to_fetch);
+            tsdb_unlock(db);
             return ESP_ERR_INVALID_ARG;
         }
         memcpy(query->param_indices, param_indices, num_params_to_fetch);
@@ -72,6 +129,7 @@ esp_err_t tsdb_query_init_h(tsdb_t *db,
         query->block_buffer = heap_caps_malloc(sizeof(tsdb_block_t), MALLOC_CAP_8BIT);
         if (query->block_buffer == NULL) {
             ESP_LOGE(TAG, "Failed to allocate query block buffer");
+            tsdb_unlock(db);
             return ESP_ERR_NO_MEM;
         }
         query->owns_buffer = true;
@@ -89,9 +147,10 @@ esp_err_t tsdb_query_init_h(tsdb_t *db,
     // We do NOT use the sparse index to seek to start_time: once the ring has
     // wrapped, index entries are ordered by physical slot (the slot they were
     // last written at), not by timestamp, so a binary search on them is
-    // invalid and lands in the wrong place. A full logical scan with an
-    // early-exit once ts > end_time is correct for every range and is bounded
-    // by `available` record reads (one pass over the ring).
+    // invalid and lands in the wrong place. A logical walk with an early-exit
+    // once ts > end_time is correct for every range and is bounded by
+    // `available` record reads; the binary seek below then jumps the walk's
+    // starting point to the window in O(log n) block reads.
     bool unlimited = (query->header.max_records == 0);
     uint32_t available_records = unlimited ? query->header.total_records :
                                  ((query->header.total_records < query->header.max_records) ?
@@ -106,6 +165,23 @@ esp_err_t tsdb_query_init_h(tsdb_t *db,
     query->current_block_num = rpb ? (first_slot / rpb) : 0;
     query->offset_in_block = rpb ? (first_slot % rpb) : 0;
     query->block_loaded = false;
+
+    // O(log n) start seek: jump the cursor to the first record with
+    // ts >= start_time instead of linearly scanning from the oldest.
+    // (records_scanned advances by the skipped count so query_next's
+    // absolute-record-index math for overflow lookups stays correct.)
+    if (available_records > 0 && rpb > 0 &&
+        start_time > query->header.oldest_timestamp) {
+        uint32_t k = tsdb_seek_start(query, available_records, first_slot, unlimited);
+        if (k > 0) {
+            uint32_t slot = unlimited ? k :
+                            ((first_slot + k) % query->header.max_records);
+            query->records_scanned = k;
+            query->current_record_idx = slot;
+            query->current_block_num = slot / rpb;
+            query->offset_in_block = slot % rpb;
+        }
+    }
 
     ESP_LOGD(TAG, "Query init: time=[%lu, %lu], params=%d, scan %lu records from slot %lu",
              (unsigned long)start_time, (unsigned long)end_time,
@@ -122,8 +198,6 @@ esp_err_t tsdb_query_next(tsdb_query_t *query,
         return ESP_ERR_INVALID_ARG;
     }
 
-    tsdb_t *db = query->db;
-
     bool unlimited = (query->header.max_records == 0);
     uint32_t available = query->end_record_idx;   // total records to scan (fixed)
     uint16_t qrpb = query->header.records_per_block;
@@ -133,10 +207,10 @@ esp_err_t tsdb_query_next(tsdb_query_t *query,
     // visited every retained record or passed end_time.
     while (query->records_scanned < available) {
         if (!query->block_loaded) {
-            if (tsdb_read_block(db, query->current_block_num,
+            if (tsdb_read_block(query->db, query->current_block_num,
                                 query->block_buffer) != ESP_OK) {
                 // Every slot inside the ring has a backing block; a read
-                // failure here means truncation/corruption — stop cleanly.
+                // failure here means truncation/corruption -- stop cleanly.
                 ESP_LOGD(TAG, "Block %lu unreadable mid-ring",
                          (unsigned long)query->current_block_num);
                 return ESP_ERR_NOT_FOUND;
@@ -179,13 +253,13 @@ esp_err_t tsdb_query_next(tsdb_query_t *query,
             uint8_t param_idx = query->param_indices[i];
             if (param_idx < query->header.num_params) {
                 values[i] = TSDB_BLOCK_PARAM(qraw, qrpb, param_idx, cur_off);
-            } else if (db->extra_param_count > 0 &&
-                       param_idx < (query->header.num_params + db->extra_param_count) &&
-                       abs_record_idx >= db->first_overflow_record_idx) {
-                uint32_t overflow_idx = abs_record_idx - db->first_overflow_record_idx;
+            } else if (query->db->extra_param_count > 0 &&
+                       param_idx < (query->header.num_params + query->db->extra_param_count) &&
+                       abs_record_idx >= query->db->first_overflow_record_idx) {
+                uint32_t overflow_idx = abs_record_idx - query->db->first_overflow_record_idx;
                 uint8_t extra_idx = param_idx - query->header.num_params;
-                uint32_t ovf_offset = db->overflow_data_offset +
-                                     (overflow_idx * db->overflow_record_size) +
+                uint32_t ovf_offset = query->db->overflow_data_offset +
+                                     (overflow_idx * query->db->overflow_record_size) +
                                      (extra_idx * sizeof(int16_t));
 
                 long saved_pos = ftell(query->file);
@@ -214,6 +288,9 @@ void tsdb_query_close(tsdb_query_t *query) {
         return;
     }
 
+    // Capture the handle before we wipe the struct -- tsdb_unlock() needs it.
+    tsdb_t *db = query->db;
+
     // Free buffer if we allocated it separately
     if (query->owns_buffer && query->block_buffer != NULL) {
         free(query->block_buffer);
@@ -222,6 +299,12 @@ void tsdb_query_close(tsdb_query_t *query) {
     }
 
     memset(query, 0, sizeof(tsdb_query_t));
+
+    // Release the handle lock taken by tsdb_query_init_h(). The mutex is
+    // recursive so the same task can also do writes.
+    if (db != NULL) {
+        tsdb_unlock(db);
+    }
 }
 
 esp_err_t tsdb_query_count_h(tsdb_t *db,

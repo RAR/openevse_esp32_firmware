@@ -32,12 +32,12 @@ esp_err_t tsdb_alloc_buffer_pool(tsdb_buffer_pool_t *pool,
         caps = MALLOC_CAP_SPIRAM;
         ESP_LOGI(TAG, "Using PSRAM allocation strategy");
     } else if (strategy == TSDB_ALLOC_INTERNAL_RAM) {
-        // MUST include MALLOC_CAP_8BIT: MALLOC_CAP_INTERNAL alone can return IRAM,
+        // Must include MALLOC_CAP_8BIT. MALLOC_CAP_INTERNAL alone can return IRAM,
         // which only permits aligned 32-bit word access. Block buffers take
-        // int16/uint16 (halfword) stores (TSDB_BLOCK_PARAM/COUNT), so an IRAM
-        // buffer faults with LoadStoreError on xtensa (e.g. ESP32 WROOM). 8BIT
-        // forces byte-addressable internal DRAM. (riscv tolerates this, hence the
-        // P4/PSRAM paths never saw it.)
+        // int16/uint16 (halfword) stores via TSDB_BLOCK_PARAM/TSDB_BLOCK_COUNT, so
+        // an IRAM-backed buffer faults with LoadStoreError on xtensa (e.g. ESP32).
+        // 8BIT forces byte-addressable internal DRAM. (riscv tolerates unaligned/
+        // narrow IRAM access, so this never surfaced on those targets.)
         caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
         ESP_LOGI(TAG, "Using internal RAM allocation strategy");
     } else {
@@ -46,7 +46,8 @@ esp_err_t tsdb_alloc_buffer_pool(tsdb_buffer_pool_t *pool,
             caps = MALLOC_CAP_SPIRAM;
             ESP_LOGI(TAG, "Auto-detected: using PSRAM");
         } else {
-            caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;  // 8BIT: byte-addressable DRAM, never IRAM
+            // 8BIT: byte-addressable internal DRAM, never IRAM (see above).
+            caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
             ESP_LOGI(TAG, "Auto-detected: using internal RAM");
         }
     }
