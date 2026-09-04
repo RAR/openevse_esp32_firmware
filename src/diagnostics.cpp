@@ -64,6 +64,12 @@ typedef spi_flash_mmap_handle_t diag_mmap_handle_t;
 
 // The transients worth catching are short. Sampling every 5s missed dips that
 // a request burst opens and closes well inside one interval, so sample often;
+// Internal DRAM only. On PSRAM boards MALLOC_CAP_8BIT alone answers with the
+// largest PSRAM block (8 MB on the S3 LCD board), which hides the number that
+// starves lwIP and TLS: the largest *internal* block. Identical on boards
+// without PSRAM.
+#define DIAG_HEAP_CAPS (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+
 // heap_caps_get_largest_free_block walks only the free list and is cheap
 // enough at this rate.
 #define DIAG_SAMPLE_INTERVAL 1000
@@ -142,7 +148,7 @@ void diagnostics_loop()
   diag_last_sample = now;
 
 #if DIAG_HAVE_IDF
-  uint32_t largest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  uint32_t largest = (uint32_t)heap_caps_get_largest_free_block(DIAG_HEAP_CAPS);
   if(largest < diag_largest_block_min) {
     diag_largest_block_min = largest;
   }
@@ -225,7 +231,7 @@ int diagnostics_ws_reap()
 uint32_t diagnostics_probe_begin()
 {
 #if DIAG_HAVE_IDF
-  return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  return (uint32_t)heap_caps_get_largest_free_block(DIAG_HEAP_CAPS);
 #else
   return 0;
 #endif
@@ -237,7 +243,7 @@ void diagnostics_probe_end(int slot, uint32_t start)
   if(slot < 0 || slot >= DIAG_PROBE_SLOTS) {
     return;
   }
-  uint32_t now = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  uint32_t now = (uint32_t)heap_caps_get_largest_free_block(DIAG_HEAP_CAPS);
   diag_probe_hits[slot]++;
   if(now < start) {
     uint32_t drop = start - now;
@@ -254,7 +260,7 @@ void diagnostics_status(JsonDocument &doc)
   // Fold this reading into the minimum as well. /status is itself one of the
   // heavier allocations, so a sample taken here is a sample taken under load —
   // exactly the moment the periodic sampler is least likely to have caught.
-  uint32_t largest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  uint32_t largest = (uint32_t)heap_caps_get_largest_free_block(DIAG_HEAP_CAPS);
   if(largest < diag_largest_block_min) {
     diag_largest_block_min = largest;
   }
