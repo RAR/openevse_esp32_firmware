@@ -36,7 +36,6 @@
 #include "net_manager.h"
 #include "web_server.h"
 #include "flash_migrate.h"
-#include "ohm.h"
 #include "input.h"
 #include "emoncms.h"
 #include "mqtt.h"
@@ -57,6 +56,8 @@
 #include "current_shaper.h"
 #include "temp_throttle.h"
 #include "limit.h"
+#include "diagnostics.h"
+#include "boost.h"
 
 #if defined(ENABLE_PN532)
 #include "pn532.h"
@@ -66,6 +67,9 @@
 #include "event_log.h"
 #include "evse_man.h"
 #include "scheduler.h"
+#include "loadsharing_discovery_task.h"
+#include "loadsharing_peer_poller.h"
+#include "loadsharing_types.h"
 #ifndef ENABLE_TSDB
 #include "energy_logger.h"
 #else
@@ -89,7 +93,6 @@ NetManagerTask net(lcd, ledManager, timeManager);
 
 RapiSender &rapiSender = evse.getSender();
 
-unsigned long Timer1; // Timer for events once every 30 seconds
 unsigned long Timer3; // Timer for events once every 2 seconds
 
 static uint32_t start_mem = 0;
@@ -103,7 +106,6 @@ String buildenv = ESCAPEQUOTE(BUILD_ENV_NAME);
 String serial;
 
 OcppTask ocpp = OcppTask();
-
 
 static void hardware_setup();
 static void handle_serial();
@@ -137,6 +139,8 @@ void setup()
   process_early_command_line();
 #endif
 
+  diagnostics_begin();
+
   hardware_setup();
   ESPAL.begin();
 
@@ -153,6 +157,9 @@ void setup()
 
   if(!LittleFS.begin(FORMAT_LITTLEFS_IF_FAILED)){
     DEBUG.println("LittleFS Mount Failed");
+    // Arm here too: this path returns early and would otherwise skip the
+    // enableLoopWDT() at the end of setup(), leaving loop() unguarded.
+    enableLoopWDT();
     return;
   }
 
@@ -206,6 +213,9 @@ void setup()
   limit.begin(evse);
   DBUGF("After limit.begin: %d", ESPAL.getFreeHeap());
 
+  boost.begin(evse);
+  DBUGF("After boost.begin: %d", ESPAL.getFreeHeap());
+
   lcd.begin(evse, scheduler, manual);
   DBUGF("After lcd.begin: %d", ESPAL.getFreeHeap());
 
@@ -236,6 +246,24 @@ void setup()
   web_server_setup();
   DBUGF("After web_server_setup: %d", ESPAL.getFreeHeap());
 
+  // Initialize load sharing group state:
+  // - Load persisted group peers from LittleFS
+  // - Register callback to wake poller when peer list changes
+  loadSharingGroupState.loadGroupPeers();
+  loadSharingGroupState.setOnPeerChange([]() {
+    MicroTask.wakeTask(&loadSharingPeerPoller);
+  });
+  DBUGF("After loadSharingGroupState init: %d", ESPAL.getFreeHeap());
+
+  // Initialize background discovery task for load sharing
+  // Discovery will push results into group state via onDiscoveryComplete()
+  loadSharingDiscoveryTask.begin(loadSharingGroupState);
+  DBUGF("After loadSharingDiscoveryTask.begin: %d", ESPAL.getFreeHeap());
+
+  // Initialize background peer poller task for load sharing
+  // Maintains WebSocket connections to group peers for real-time status updates
+  loadSharingPeerPoller.begin(loadSharingGroupState);
+  DBUGF("After loadSharingPeerPoller.begin: %d", ESPAL.getFreeHeap());
 #ifdef ENABLE_TSDB
   tsdbEnergyLogger.begin(evse);
   DBUGF("After tsdbEnergyLogger.begin: %d", ESPAL.getFreeHeap());
@@ -266,6 +294,18 @@ void setup()
   lcd.display(currentfirmware, 0, 1, 5 * 1000, LCD_CLEAR_LINE);
 
   start_mem = last_mem = ESPAL.getFreeHeap();
+
+  // Arm the loop watchdog last. Arduino's loopTask only feeds it once per
+  // loop() iteration and never during setup(), so arming it at the top (where
+  // hardware_setup() used to) put a 5s panic timer over the whole of setup
+  // with nothing resetting it. Anything slow in here -- LittleFS
+  // format-on-corrupt, TSDB recovery, a stalled DNS lookup -- would panic and
+  // reboot, then hit the same slow path again on the next boot.
+  //
+  // The trade-off is that a hang inside setup() is now unguarded. That is the
+  // better failure: it stops at the hang where serial can show it, instead of
+  // rebooting in a loop that looks identical to every other reset.
+  enableLoopWDT();
 } // end setup
 
 // -------------------------------------------------------------------
@@ -279,7 +319,12 @@ void loop()
   Mongoose.poll(0);
   Profile_End(Mongoose, 10);
 
+  // Follow HTTP OTA redirects only after Mongoose.poll() has destroyed the
+  // previous TLS connection, avoiding two simultaneous TLS contexts.
+  http_update_loop();
+
   web_server_loop();
+  diagnostics_loop();
   flash_migrate_loop();
   ota_loop();
   rapiSender.loop();
@@ -293,27 +338,12 @@ void loop()
   // have been silent no-ops since the EvseManager refactor.  Reviving
   // import_timers() would auto-import (and clear) the controller's delay timer
   // into Charge Manager rules — a deliberate decision for a separate change,
-  // along with routing time_man/ohm/input off the dead global.
+  // along with routing time_man/input off the dead global.
 
   if(net.isConnected())
   {
     if (vehicle_data_src == VEHICLE_DATA_SRC_TESLA) {
       teslaClient.loop();
-    }
-
-    // -------------------------------------------------------------------
-    // Do these things once every 30 seconds
-    // -------------------------------------------------------------------
-    if ((millis() - Timer1) >= 30000)
-    {
-      if(!Update.isRunning())
-      {
-        if(config_ohm_enabled()) {
-          ohm_loop();
-        }
-      }
-
-      Timer1 = millis();
     }
 
     if(emoncms_updated)
@@ -369,7 +399,7 @@ void event_send(JsonDocument &event)
 void hardware_setup()
 {
   debug_setup();
-  enableLoopWDT();
+  // enableLoopWDT() deliberately moved to the end of setup() -- see there.
 }
 
 class SystemRestart : public MicroTasks::Alarm
@@ -499,12 +529,16 @@ static void printUsage() {
     "  Examples:\n"
     "    --set-config www_http_port=8080\n"
     "    --set-config www_https_port=8443\n"
+    "    --set-config hostname=my-openevse\n"
     "    --set-config mqtt_server=192.168.1.100\n"
     "    --set-config mqtt_port=1883\n"
     "Runtime options (EPOXY_DUINO native build):\n"
     "  --rapi-serial PATH   Set PTY/serial path for RAPI (e.g., /dev/pts/5)\n"
-    "%s",
-    epoxy_argv[0], lvgl_usage
+    "Environment variables:\n"
+    "  OPENEVSE_CHIP_ID     Set unique chip ID (hex, e.g. 0xAABBCCDDEEFF) for\n"
+    "                       multi-instance testing. Affects default hostname and\n"
+    "                       mDNS device ID.\n",
+    epoxy_argv[0]
   );
 }
 

@@ -51,7 +51,15 @@ static bool bl_ready = false;
 static const uint16_t SCREEN_W = TFT_HEIGHT; // 480
 static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 
-// ONE partial buffer (~1/10 screen) in INTERNAL DRAM.
+// ONE partial buffer in INTERNAL DRAM.
+//
+// 16 lines on the stock board: at 32 this took a 30KB contiguous block at boot
+// out of a heap with only ~60KB free; instrumentation on hardware showed the
+// largest allocatable block down at 11KB while total free sat flat at ~60KB.
+// Halving costs twice as many flush calls for the same total pixels -- small
+// next to the blocking SPI write itself -- and returns 15KB of contiguous DRAM.
+// openevse_s3_lcd overrides DRAW_BUF_LINES=32 from its env (its internal heap is
+// not under the same pressure because the network stack lives in PSRAM).
 //
 // Single-buffered because of the TFT_eSPI boundary noted above, not because of
 // anything about the ILI9488 or the S3: SPI_18BIT_DRIVER compiles the library's
@@ -85,7 +93,10 @@ static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 // the S3 is an ER-TFT035-6 on FPC through a ZIF -- different trace lengths, different
 // flex path. A clean 80 MHz result on one is not evidence for the other, and on
 // shipped units there is no series termination to add and nothing to recall.
-static const uint32_t DRAW_BUF_PIXELS = SCREEN_W * 32; // 480*32 = 15360 px (~30 KB)
+#ifndef DRAW_BUF_LINES
+#define DRAW_BUF_LINES 16
+#endif
+static const uint32_t DRAW_BUF_PIXELS = SCREEN_W * DRAW_BUF_LINES; // 480*16 = 7680 px (~15 KB)
 
 static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
