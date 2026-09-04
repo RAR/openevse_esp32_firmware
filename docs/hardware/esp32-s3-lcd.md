@@ -196,13 +196,25 @@ drain status pin, pulled low when VIN1 is not being used"*, and VIN1 is USB. So:
 versions. Driven by the same LVGL renderer as the stock TFT
 (`ENABLE_SCREEN_LVGL_TFT`, `src/lvgl_tft/`), over TFT_eSPI.
 
-- **`TFT_MISO=-1` is correct, but the bus is not "write-only".** In the strapped mode
+- **There is no real MISO, but `TFT_MISO` must not be `-1`.** In the strapped mode
   the datasheet's own table reads `1 1 1 | 4-wire 8-bit data Serial Interface I |
   SCL, SDA/SDO, D/CX, CSX` — `SDA/SDO` is **one combined pin**, and pin 34 `SDA` is
   *"serial input or serial data input/output bi-direction."* **Readback returns on
-  SDA, not SDO**, so wiring the (open) `SDO` would have bought nothing, and no MISO
-  pin exists to give TFT_eSPI. TFT_eSPI keeps `-1` on the S3 (it only aliases MISO to
-  MOSI on the C3/S2) and passes it straight to `spi_bus_config_t`.
+  SDA, not SDO**, so wiring the (open) `SDO` would have bought nothing.
+
+  Found on the first board: TFT_eSPI 2.5.43 aliases `TFT_MISO=-1` to `TFT_MOSI` on
+  the S3 (not just the C3/S2), so `SPIClass::begin(12, 11, 11, -1)` attaches IO11 as
+  MISO and then as MOSI. Core 3.x's peripheral manager runs the SPI deinit on that
+  second attach, which stops the bus, and the first `writecommand()` then spins on
+  `cmd.usr` until the task watchdog fires. The build therefore names **IO13** — the
+  FSPI `Q` IO_MUX pin, unconnected on both revisions — as a dummy MISO. Nothing
+  reads it.
+
+  Also found on the first board: core 3.x defines `FSPI` as 0 on the S3 and IDF's
+  `REG_SPI_BASE(0)` is 0, so TFT_eSPI's default `SPI_PORT = FSPI` aimed every raw
+  register write at address `0x10` (StoreProhibited on the first command).
+  `USE_FSPI_PORT` gives it `SPI_PORT = 2`, the real GPSPI2 base, while it still
+  opens `SPIClass(FSPI)` on the same bus.
 
   A bring-up ID check is therefore *possible*, just not through TFT_eSPI or
   `esp_lcd`'s panel-IO layer: it is a half-duplex read on IO11 (`SPI_DEVICE_3WIRE`
