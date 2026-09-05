@@ -132,3 +132,4 @@ sdkconfig.openevse_*
 dependencies.lock
 managed_components/
 .dummy/
+tools/fake_evse_host/fake_evse_host
