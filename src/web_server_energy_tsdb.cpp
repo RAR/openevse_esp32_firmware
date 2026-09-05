@@ -178,6 +178,13 @@ void handleEnergyRaw(MongooseHttpServerRequest *request)
     bool first  = true;
     int  count  = 0;
 
+    // The response stream reallocates its buffer on every print(), so pushing
+    // one record at a time makes a 500-point reply quadratic (measured: most of
+    // a 1.8 s response). Batch records into a chunk and hand over whole chunks.
+    static const size_t CHUNK = 2048;
+    char   chunk[CHUNK];
+    size_t chunk_used = 0;
+
     // Either store, or neither -- a failed open returns a valid empty
     // {"samples":[]} rather than an error.
     if (energy_query_open(q, start_ts, end_ts)) {
@@ -212,13 +219,23 @@ void handleEnergyRaw(MongooseHttpServerRequest *request)
             (unsigned long)ts, amps, temp_c, energy,
             volts, power_w, pilot_a);
         }
-        response->print(buf);
+        size_t n = strlen(buf);
+        if (chunk_used + n > CHUNK) {
+          response->write((const uint8_t *)chunk, chunk_used);
+          chunk_used = 0;
+        }
+        memcpy(chunk + chunk_used, buf, n);
+        chunk_used += n;
         first = false;
         count++;
       }
     }
 
     energy_query_close(q);
+
+    if (chunk_used > 0) {
+      response->write((const uint8_t *)chunk, chunk_used);
+    }
 
     response->print("]}");
 

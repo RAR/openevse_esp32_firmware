@@ -353,6 +353,16 @@ so it runs in a background task while the logger keeps writing to flash; `/statu
 capacity change between builds, or a creation cut short) is discarded and recreated;
 its records are not carried over.
 
+**Reading it back.** `/energy/raw?max=500` took 5.9 s on the first bench run. Three
+things, in order of blame: the query cursor read each 32-byte record with its own
+seek + read (a 512-byte sector fetch over the 1-bit bus per record) -- fixed with
+a 4 KB block cache in `sdlog_store`; the web server drains a response
+`ARDUINO_MONGOOSE_SEND_BUFFER_SIZE` (256 B) per main-loop pass -- the S3 env sets
+it to one lwIP send buffer; and the lwIP TCP buffers are doubled in
+`sdkconfig.defaults.s3lcd` since they live in PSRAM here. Same query now: 0.28 s;
+2000 points (62 KB) 0.94 s; a 100 KB GUI asset 1.7 s → 1.0 s. `/config` is still
+~0.9 s and that is the handler, not the transport.
+
 ### Config mirror
 
 `src/config_backup.*`. Every commit of the user config also writes it, secrets
