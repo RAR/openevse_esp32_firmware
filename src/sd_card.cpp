@@ -30,6 +30,19 @@
 
 static bool _mounted = false;
 static const char *_status = "not probed";
+static uint64_t _size = 0, _used = 0;
+static unsigned long _usage_at = 0;
+#define SD_USAGE_REFRESH_MS (5UL * 60UL * 1000UL)
+
+static void refresh_usage()
+{
+  _size = SD_MMC.cardSize();
+  _used = SD_MMC.usedBytes();
+  _usage_at = millis();
+}
+
+uint64_t sd_card_size() { return _mounted ? _size : 0; }
+uint64_t sd_card_used() { return _mounted ? _used : 0; }
 
 bool sd_card_detected()
 {
@@ -82,7 +95,8 @@ bool sd_card_begin()
 
   _mounted = true;
   _status = "mounted";
-  DBUGF("[sd] mounted, %llu MB", SD_MMC.cardSize() / (1024ULL * 1024ULL));
+  refresh_usage();
+  DBUGF("[sd] mounted, %llu MB, %llu MB used", _size / (1024ULL * 1024ULL), _used / (1024ULL * 1024ULL));
   return true;
 }
 
@@ -106,6 +120,9 @@ bool sd_card_poll()
     _mounted = false;
     _status = "removed";
     return false;
+  }
+  if(millis() - _usage_at > SD_USAGE_REFRESH_MS) {
+    refresh_usage();
   }
 
   return true;

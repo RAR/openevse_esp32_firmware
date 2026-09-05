@@ -35,6 +35,7 @@ static bool preallocate()
         (unsigned long)SDLOG_CAPACITY,
         (unsigned long)((uint64_t)SDLOG_CAPACITY * SDLOG_RECORD_BYTES / (1024 * 1024)));
 
+  unsigned long t0 = millis();
   FILE *fp = fopen(SDLOG_PATH, "wb");
   if(fp == nullptr) {
     return false;
@@ -68,6 +69,9 @@ static bool preallocate()
   if(!ok) {
     DBUGLN("[sdlog] ring creation failed (card full?)");
     remove(SDLOG_PATH);
+  } else {
+    // The one slow step in bring-up; SDLOG_CAPACITY is the knob if this is unreasonable.
+    DBUGF("[sdlog] ring created in %lu ms", millis() - t0);
   }
   return ok;
 }

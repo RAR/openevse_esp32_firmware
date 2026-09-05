@@ -7,6 +7,10 @@
 #include <LittleFS.h>
 
 #include "app_config.h"
+#ifdef ENABLE_SD_CARD
+#include "sd_card.h"
+#include "sdlog_store.h"
+#endif
 #if defined(ESP32) && !defined(EPOXY_DUINO)
 #include <esp_idf_version.h>
 #endif
@@ -882,6 +886,13 @@ bool config_serialize(DynamicJsonDocument &doc, bool longNames, bool compactOutp
   doc["heap_size"] = (uint32_t)ESP.getHeapSize();
   doc["littlefs_size"] = (uint32_t)LittleFS.totalBytes();
   doc["littlefs_used"] = (uint32_t)LittleFS.usedBytes();
+#ifdef ENABLE_SD_CARD
+  if(sd_card_mounted()) {
+    doc["sd_size"] = sd_card_size();
+    doc["sd_used"] = sd_card_used();
+    doc["sd_log_size"] = (uint64_t)SDLOG_CAPACITY * SDLOG_RECORD_BYTES;
+  }
+#endif
   {
     const esp_partition_t *p = esp_ota_get_running_partition();
     doc["app0_size"]   = p ? (uint32_t)p->size : 0;

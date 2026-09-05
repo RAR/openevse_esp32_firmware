@@ -46,6 +46,12 @@ bool sd_card_poll();
 // Human-readable state for /status and the boot log.
 const char *sd_card_status();
 
+// Card capacity and FAT usage in bytes (0 when not mounted). usedBytes() walks
+// the FAT, which on a 32 GB card is not free, so the figures are cached at
+// mount and refreshed from sd_card_poll() at most every few minutes.
+uint64_t sd_card_size();
+uint64_t sd_card_used();
+
 #else
 
 static inline bool sd_card_begin() { return false; }
@@ -53,6 +59,8 @@ static inline bool sd_card_mounted() { return false; }
 static inline bool sd_card_detected() { return false; }
 static inline bool sd_card_poll() { return false; }
 static inline const char *sd_card_status() { return "unsupported"; }
+static inline uint64_t sd_card_size() { return 0; }
+static inline uint64_t sd_card_used() { return 0; }
 
 #endif // ENABLE_SD_CARD
 
