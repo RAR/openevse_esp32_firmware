@@ -354,6 +354,23 @@ void loop()
 
   web_server_loop();
   diagnostics_loop();
+#ifdef ENABLE_SD_CARD
+  {
+    // Card-detect is a mechanical switch; sample it every second rather than
+    // only at the (up to five-minute) energy-sample cadence, so a pull or a
+    // re-insert is acted on while it is still true. Close the log ring before
+    // the mount goes away so no handle outlives its filesystem; the logger
+    // reopens it on the next sample via sd_card_generation().
+    static unsigned long sd_poll_at = 0;
+    if(millis() - sd_poll_at >= 1000) {
+      sd_poll_at = millis();
+      if(sdlog_store_ready() && !sd_card_detected()) {
+        sdlog_store_end();
+      }
+      sd_card_poll();
+    }
+  }
+#endif
   flash_migrate_loop();
   ota_loop();
   rapiSender.loop();

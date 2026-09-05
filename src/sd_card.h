@@ -12,9 +12,10 @@
 // Card-detect (IO41) is active low and needs a pull-up -- internal on v1.2,
 // external R42 on v1.3. Swapping a card means opening the enclosure (the socket
 // mouth is 1.46 mm inboard and push-push needs a full card length of travel), so
-// insertion is treated as a boot-time fact. Removal is still watched, because
-// that is a failure mode rather than a workflow: pulling a live card must degrade
-// to internal flash, not wedge the logger.
+// insertion is normally a boot-time fact. Both edges are watched anyway: pulling
+// a live card must degrade to internal flash rather than wedge the logger, and
+// a card inserted (or re-inserted) later is mounted at the next poll so a bench
+// swap does not need a reboot.
 #ifndef __SD_CARD_H
 #define __SD_CARD_H
 
@@ -39,9 +40,15 @@ bool sd_card_mounted();
 // be told apart from an empty slot in the logs.
 bool sd_card_detected();
 
-// Re-read card-detect and unmount if the card has gone. Call from a slow poll;
-// returns true if the card is still usable.
+// Re-read card-detect: unmount if the card has gone, mount if one has arrived
+// since the last "absent" reading. Call from a slow poll; returns true if the
+// card is currently usable.
 bool sd_card_poll();
+
+// Incremented on every successful mount. Callers holding files open on the card
+// compare it against the value they saw at open time: a change means the card
+// was pulled and (re)inserted underneath them and their handles are stale.
+uint32_t sd_card_generation();
 
 // Human-readable state for /status and the boot log.
 const char *sd_card_status();
@@ -58,6 +65,7 @@ static inline bool sd_card_begin() { return false; }
 static inline bool sd_card_mounted() { return false; }
 static inline bool sd_card_detected() { return false; }
 static inline bool sd_card_poll() { return false; }
+static inline uint32_t sd_card_generation() { return 0; }
 static inline const char *sd_card_status() { return "unsupported"; }
 static inline uint64_t sd_card_size() { return 0; }
 static inline uint64_t sd_card_used() { return 0; }

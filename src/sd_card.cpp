@@ -29,6 +29,11 @@
 #endif
 
 static bool _mounted = false;
+// Set whenever card-detect has read "absent" since the last mount. A mount is
+// only attempted on the rising edge of detect, so a card that is present but
+// unmountable is tried once, not once a minute.
+static bool _seen_absent = false;
+static uint32_t _generation = 0;
 static const char *_status = "not probed";
 static uint64_t _size = 0, _used = 0;
 static unsigned long _usage_at = 0;
@@ -65,6 +70,7 @@ bool sd_card_begin()
 #endif
 
   if(!sd_card_detected()) {
+    _seen_absent = true;
     _status = "no card";
     DBUGLN("[sd] no card detected");
     return false;
@@ -94,6 +100,8 @@ bool sd_card_begin()
   }
 
   _mounted = true;
+  _seen_absent = false;
+  _generation++;
   _status = "mounted";
   refresh_usage();
   DBUGF("[sd] mounted, %llu MB, %llu MB used", _size / (1024ULL * 1024ULL), _used / (1024ULL * 1024ULL));
@@ -105,10 +113,25 @@ bool sd_card_mounted()
   return _mounted;
 }
 
+uint32_t sd_card_generation()
+{
+  return _generation;
+}
+
 bool sd_card_poll()
 {
   if(!_mounted) {
-    return false;
+    if(!sd_card_detected()) {
+      _seen_absent = true;
+      return false;
+    }
+    if(!_seen_absent) {
+      // Present but not mounted, and detect never dropped: the earlier mount
+      // attempt failed and nothing has changed. Wait for a fresh insertion.
+      return false;
+    }
+    DBUGLN("[sd] card inserted, mounting");
+    return sd_card_begin();
   }
 
   if(!sd_card_detected())
