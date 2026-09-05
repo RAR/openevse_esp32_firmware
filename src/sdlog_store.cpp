@@ -6,6 +6,7 @@
 
 #include "sdlog_store.h"
 #include <unistd.h>
+#include <sys/stat.h>
 #include "sdlog_ring.h"
 #include "sd_card.h"
 #include "debug.h"
@@ -30,7 +31,7 @@ static bool slot_read(void *ctx, uint32_t index, uint8_t out[SDLOG_RECORD_BYTES]
 
 // Create the ring at full size. Written in blocks rather than record-by-record:
 // a million 32-byte writes through the FAT layer would take minutes.
-static bool preallocate()
+bool sdlog_store_preallocate()
 {
   DBUGF("[sdlog] creating %lu-record ring (%lu MB), this takes a moment",
         (unsigned long)SDLOG_CAPACITY,
@@ -86,28 +87,31 @@ bool sdlog_store_begin()
   _fp = fopen(SDLOG_PATH, "r+b");
   if(_fp == nullptr)
   {
-    if(!preallocate()) {
-      return false;
+    // No ring yet. Creating one is slow, so it is left to sd_card_loop(),
+    // which runs sdlog_store_preallocate() in a background task and calls
+    // begin() again when it is done.
+    if(sdlog_store_exists()) {
+      DBUGLN("[sdlog] ring exists but would not open");
     }
-    _fp = fopen(SDLOG_PATH, "r+b");
-    if(_fp == nullptr) {
-      DBUGLN("[sdlog] could not reopen the ring after creating it");
-      return false;
-    }
+    return false;
   }
 
-  // Refuse a file that is not the expected size rather than indexing off the end
-  // of it. A capacity change would break the seq % capacity invariant that all
-  // the recovery logic rests on.
+  // A file that is not the expected size cannot be used: the seq % capacity
+  // invariant that all the recovery logic rests on would break. This happens
+  // when SDLOG_CAPACITY changes between builds or a preallocation was cut
+  // short. Drop it so the next sd_card_loop() pass creates a fresh ring;
+  // the old records were written under a different capacity and are not
+  // recoverable in place.
   if(fseek(_fp, 0, SEEK_END) != 0) {
     fclose(_fp); _fp = nullptr;
     return false;
   }
   long size = ftell(_fp);
   if(size != (long)((uint64_t)SDLOG_CAPACITY * SDLOG_RECORD_BYTES)) {
-    DBUGF("[sdlog] ring is %ld bytes, expected %llu -- refusing to use it",
+    DBUGF("[sdlog] ring is %ld bytes, expected %llu -- discarding it",
           size, (unsigned long long)SDLOG_CAPACITY * SDLOG_RECORD_BYTES);
     fclose(_fp); _fp = nullptr;
+    remove(SDLOG_PATH);
     return false;
   }
 
@@ -130,6 +134,12 @@ bool sdlog_store_begin()
     DBUGLN("[sdlog] empty ring, starting at seq 0");
   }
   return true;
+}
+
+bool sdlog_store_exists()
+{
+  struct stat st;
+  return stat(SDLOG_PATH, &st) == 0;
 }
 
 bool sdlog_store_ready()

@@ -1549,6 +1549,37 @@ handleRst(MongooseHttpServerRequest *request) {
 // Restart (Reboot gateway or evse)
 // url: /restart
 // -------------------------------------------------------------------
+
+#ifdef ENABLE_SD_CARD
+// POST /sdcard/format: wipe the microSD card and re-provision it (energy-log
+// ring + config mirror). Asynchronous: returns {"msg":"started"} at once and
+// /status sd_status walks "formatting" -> "creating log" -> "mounted".
+static void
+handleSdCardFormat(MongooseHttpServerRequest *request) {
+  MongooseHttpServerResponseStream *response;
+  if(false == requestPreProcess(request, response)) {
+    return;
+  }
+  if(HTTP_POST != request->method()) {
+    response->setCode(405);
+    response->print("{\"msg\":\"POST only\"}");
+  } else if(sd_card_busy()) {
+    response->setCode(409);
+    response->print("{\"msg\":\"busy\"}");
+  } else if(!sd_card_mounted()) {
+    response->setCode(404);
+    response->print("{\"msg\":\"no card\"}");
+  } else if(sd_card_request_format()) {
+    response->setCode(200);
+    response->print("{\"msg\":\"started\"}");
+  } else {
+    response->setCode(500);
+    response->print("{\"msg\":\"failed\"}");
+  }
+  request->send(response);
+}
+#endif
+
 void
 handleRestart(MongooseHttpServerRequest *request) {
   MongooseHttpServerResponseStream *response;
@@ -2028,6 +2059,9 @@ void web_server_setup()
   server.on("/settime$", handleSetTime);
   server.on("/reset$", handleRst);
   server.on("/restart$", handleRestart);
+#ifdef ENABLE_SD_CARD
+  server.on("/sdcard/format$", handleSdCardFormat);
+#endif
   server.on("/rapi$", handleRapi);
   server.on("/r$", handleRapi);
   server.on("/scan$", handleScan);

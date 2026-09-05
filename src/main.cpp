@@ -49,6 +49,7 @@
 #include "rtc_ds3231.h"
 #include "sd_card.h"
 #include "sdlog_store.h"
+#include "config_backup.h"
 #include "tesla_client.h"
 #include "event.h"
 #include "ocpp.h"
@@ -221,11 +222,21 @@ void setup()
 
   // The card is preferred over internal flash for the energy log when one is
   // fitted, and is simply absent otherwise -- an empty slot must degrade to the
-  // existing tsdb path, not to no history at all. Must run before
-  // tsdbEnergyLogger.begin() so the logger knows which store it is writing to.
+  // existing tsdb path, not to no history at all. sd_card_loop() opens the log
+  // ring (creating it in the background on a fresh card).
+  //
+  // A board with no stored config but a config mirror on the card is a wiped
+  // or replaced module: restore and restart so everything from WiFi up starts
+  // from the restored settings. The mirror is armed only after this decision,
+  // so the default-config housekeeping commits above cannot clobber it.
   if(sd_card_begin()) {
-    sdlog_store_begin();
+    if(!config_loaded_from_storage() && config_restore_from_card()) {
+      DBUGLN("Config restored from the card, restarting");
+      delay(100);
+      restart_system();
+    }
   }
+  config_backup_arm();
 
   timeManager.begin();
   DBUGF("After timeManager.begin: %d", ESPAL.getFreeHeap());
@@ -354,23 +365,7 @@ void loop()
 
   web_server_loop();
   diagnostics_loop();
-#ifdef ENABLE_SD_CARD
-  {
-    // Card-detect is a mechanical switch; sample it every second rather than
-    // only at the (up to five-minute) energy-sample cadence, so a pull or a
-    // re-insert is acted on while it is still true. Close the log ring before
-    // the mount goes away so no handle outlives its filesystem; the logger
-    // reopens it on the next sample via sd_card_generation().
-    static unsigned long sd_poll_at = 0;
-    if(millis() - sd_poll_at >= 1000) {
-      sd_poll_at = millis();
-      if(sdlog_store_ready() && !sd_card_detected()) {
-        sdlog_store_end();
-      }
-      sd_card_poll();
-    }
-  }
-#endif
+  sd_card_loop();
   flash_migrate_loop();
   ota_loop();
   rapiSender.loop();

@@ -325,6 +325,7 @@ bool config_deserialize(const char *json);
 bool config_deserialize(DynamicJsonDocument &doc);
 void config_commit(bool factory = false);
 void config_user_commit();  // persist user config without touching factory_write_lock
+bool config_loaded_from_storage();  // false when boot found no stored config (defaults in use)
 
 // Write config settings to JSON object
 bool config_serialize(String& json, bool longNames = true, bool compactOutput = false, bool hideSecrets = false);

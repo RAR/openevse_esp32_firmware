@@ -26,6 +26,11 @@
 #define SD_MOUNT_POINT "/sdcard"
 #endif
 
+// Define SD_FORMAT_ON_MOUNT_FAIL to format a card that is present but will not
+// mount. Off by default on purpose: on this board an unmountable card is more
+// often the DAT3 / R33 wiring than a bad filesystem, and erasing someone's card
+// on that diagnosis is the wrong default. Bench builds can turn it on.
+
 #ifdef ENABLE_SD_CARD
 
 // Probe card-detect and, if a card is there, mount it. Safe to call when no card
@@ -40,14 +45,24 @@ bool sd_card_mounted();
 // be told apart from an empty slot in the logs.
 bool sd_card_detected();
 
-// Re-read card-detect: unmount if the card has gone, mount if one has arrived
-// since the last "absent" reading. Call from a slow poll; returns true if the
-// card is currently usable.
-bool sd_card_poll();
+// Housekeeping, from the main loop. Samples card-detect once a second and acts
+// on both edges (unmount on pull, mount on insert), opens the energy-log ring
+// on a mounted card (creating it in a background task when the card has
+// none), and runs a requested format. Cheap when nothing is happening.
+void sd_card_loop();
 
-// Incremented on every successful mount. Callers holding files open on the card
-// compare it against the value they saw at open time: a change means the card
-// was pulled and (re)inserted underneath them and their handles are stale.
+// Ask for the card to be formatted (FAT, whole card) and re-provisioned with
+// a fresh energy-log ring and config mirror. Runs asynchronously from
+// sd_card_loop(); watch sd_card_status() for "formatting" -> "creating log"
+// -> "mounted". Returns false if there is no mounted card or a job is already
+// running.
+bool sd_card_request_format();
+
+// True while a format or ring creation is in progress. The store is unusable
+// and sd_card_mounted() reports false for the duration.
+bool sd_card_busy();
+
+// Incremented on every successful mount.
 uint32_t sd_card_generation();
 
 // Human-readable state for /status and the boot log.
@@ -55,7 +70,7 @@ const char *sd_card_status();
 
 // Card capacity and FAT usage in bytes (0 when not mounted). usedBytes() walks
 // the FAT, which on a 32 GB card is not free, so the figures are cached at
-// mount and refreshed from sd_card_poll() at most every few minutes.
+// mount and refreshed from sd_card_loop() at most every few minutes.
 uint64_t sd_card_size();
 uint64_t sd_card_used();
 
@@ -64,7 +79,9 @@ uint64_t sd_card_used();
 static inline bool sd_card_begin() { return false; }
 static inline bool sd_card_mounted() { return false; }
 static inline bool sd_card_detected() { return false; }
-static inline bool sd_card_poll() { return false; }
+static inline void sd_card_loop() { }
+static inline bool sd_card_request_format() { return false; }
+static inline bool sd_card_busy() { return false; }
 static inline uint32_t sd_card_generation() { return 0; }
 static inline const char *sd_card_status() { return "unsupported"; }
 static inline uint64_t sd_card_size() { return 0; }

@@ -24,8 +24,11 @@
 // Ring capacity in records. 1 048 576 records x 32 B = 32 MB, which at one sample
 // a minute is ~2 years -- against the internal tsdb's ~100 days in 2.5 MB. The
 // card is the reason to hold more, so hold more.
+// 4M records x 32 B = 128 MB. Space is not the constraint on a card; at the
+// 10 s charging cadence this is well over a year of continuous charging before
+// the ring wraps, and the file is created once, in the background.
 #ifndef SDLOG_CAPACITY
-#define SDLOG_CAPACITY (1024UL * 1024UL)
+#define SDLOG_CAPACITY (4UL * 1024UL * 1024UL)
 #endif
 
 #ifdef ENABLE_SD_CARD
@@ -34,6 +37,15 @@
 // Returns false if the card is not mounted or the file cannot be established, in
 // which case the caller should stay on internal flash.
 bool sdlog_store_begin();
+
+// True if the ring file exists on the card (any size). begin() removes a file
+// of the wrong size, so "exists but begin() failed" means an I/O problem.
+bool sdlog_store_exists();
+
+// Create the ring file, blank. Slow (a full write of SDLOG_CAPACITY records),
+// so run it from a background task, never from the main loop. Safe to call
+// while the store is not open.
+bool sdlog_store_preallocate();
 
 bool sdlog_store_ready();
 
@@ -79,6 +91,8 @@ bool sdlog_query_count(uint32_t start_ts, uint32_t end_ts, uint32_t &count);
 // functions are always called from behind an ENABLE_SD_CARD guard, because the
 // caller has to pick a cursor type as well as a source.
 static inline bool sdlog_store_begin() { return false; }
+static inline bool sdlog_store_exists() { return false; }
+static inline bool sdlog_store_preallocate() { return false; }
 static inline bool sdlog_store_ready() { return false; }
 static inline bool sdlog_store_append(uint32_t, const int16_t *) { return false; }
 static inline void sdlog_store_end() { }

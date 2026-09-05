@@ -9,10 +9,6 @@
 #include "sd_card.h"
 #include "sdlog_store.h"
 
-#ifdef ENABLE_SD_CARD
-// Mount generation the open log ring belongs to; see sd_card_generation().
-static uint32_t sd_gen = 0;
-#endif
 
 TsdbEnergyLogger tsdbEnergyLogger;
 
@@ -69,9 +65,6 @@ bool TsdbEnergyLogger::init_db() {
 void TsdbEnergyLogger::begin(EvseManager &evse) { _evse = &evse; MicroTask.startTask(this); }
 
 void TsdbEnergyLogger::setup() {
-#ifdef ENABLE_SD_CARD
-  sd_gen = sd_card_generation();   // main() already opened the ring on this mount
-#endif
   _ready = init_db();
   _last_session_wh = _evse ? _evse->getSessionEnergy() : 0;
 
@@ -262,11 +255,12 @@ void TsdbEnergyLogger::rollup_yesterday() {
 }
 
 unsigned long TsdbEnergyLogger::loop(MicroTasks::WakeReason) {
-  // Throttle to the idle cadence whenever we are not actively charging.
-  unsigned long next_ms = TSDB_ENERGY_SAMPLE_MS;
+  // Cadence depends on what we are writing to (card vs flash) and whether a
+  // session is running; see tsdb_sample_interval_ms().
+  unsigned long next_ms = tsdb_sample_interval_ms(true, false);
   if (_ready && _evse) {
     bool charging = _evse->isCharging();
-    if (!charging) next_ms = TSDB_ENERGY_IDLE_SAMPLE_MS;
+    next_ms = tsdb_sample_interval_ms(charging, sdlog_store_ready());
 
     // Advance the energy baseline every wake (even when we skip the write below),
     // so deltas stay honest once logging resumes. A session reset to 0 on vehicle
@@ -327,16 +321,10 @@ unsigned long TsdbEnergyLogger::loop(MicroTasks::WakeReason) {
       // boards.
       bool logged = false;
 #ifdef ENABLE_SD_CARD
-      // The main loop polls card-detect every second and closes the ring on
-      // removal; here we only need to (re)open it whenever the card underneath
-      // us is a different mount from the one we opened on.
-      bool card_ok = sd_card_poll();
-      if (card_ok && sd_card_generation() != sd_gen) {
-        sd_gen = sd_card_generation();
-        sdlog_store_end();
-        sdlog_store_begin();
-      }
-      if (card_ok && sdlog_store_ready()) {
+      // sd_card_loop() owns the card and the ring: it opens the ring once a
+      // card is mounted and closes it before an unmount, so "ready" here means
+      // a live file on a live mount.
+      if (sdlog_store_ready()) {
         logged = sdlog_store_append((uint32_t)now, row);
         if (!logged) {
           // append() has already marked itself not-ready, so this falls through

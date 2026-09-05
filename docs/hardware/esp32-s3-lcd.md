@@ -331,13 +331,55 @@ board whose card sits behind a sealed enclosure, *"is it logging to the card or 
 it quietly fallen back to flash?"* is not answerable by looking at it.
 
 Fallback is also the runtime failure path: pulling a live card, or any write error,
-marks the store not-ready and the next sample goes to flash. It does not retry a
-broken card.
+marks the store not-ready and the next sample goes to flash. Card-detect is sampled
+from the main loop once a second (`sd_card_loop()`), so a pull is acted on within a
+second and a re-inserted card is mounted again without a reboot. A mount is only
+attempted on the rising edge of detect, so a card that is present but will not
+mount is tried once per insertion, not once a second. Verified on v1.2 hardware:
+pull → `[sd] card removed` in under a second; re-insert → remount and the ring
+resumes at the next sample with its count intact.
 
-Capacity is 1 048 576 records × 32 B = 32 MB, about two years at one sample a
-minute, against the internal tsdb's ~100 days in 2.5 MB. Holding more is the reason
-to use the card at all. The file is created at full size up front so every later
-write is an in-place overwrite rather than a growth that disturbs FAT metadata.
+**Cadence on the card is 10 s charging / 60 s idle**, against 1 min / 5 min on
+internal flash (`tsdb_sample_interval_ms()` in `tsdb_sample.h`). Wear is the only
+reason flash is slow, and the card does not care.
+
+Capacity is 4 194 304 records × 32 B = 128 MB — over a year of continuous charging
+at 10 s before the ring wraps, against the internal tsdb's ~100 days in 2.5 MB. The
+file is created at full size up front so every later write is an in-place overwrite
+rather than a growth that disturbs FAT metadata. Creation is slow (79 s for 128 MB
+on a 32 GB card at 1-bit/20 MHz, 221 s on the same card straight after a format),
+so it runs in a background task while the logger keeps writing to flash; `/status`
+`sd_status` reads `creating log` for the duration. A ring of the wrong size (a
+capacity change between builds, or a creation cut short) is discarded and recreated;
+its records are not carried over.
+
+### Config mirror
+
+`src/config_backup.*`. Every commit of the user config also writes it, secrets
+included, to `/sdcard/openevse/config.json` (temp file, rename, fsync). At boot,
+a board whose flash holds no config but whose card holds a mirror restores it and
+restarts, so a wiped or swapped module comes back on the network by itself. The
+mirror is armed only after that boot-time decision, so the housekeeping commits a
+default config makes on first boot cannot overwrite a good mirror before it is read.
+
+The mirror is plaintext on a card that sits inside the enclosure. Certificates
+(TLS client certs live in LittleFS, referenced by id from the config) are **not**
+mirrored yet, so a restored config that names a certificate will need it uploaded
+again.
+
+### Format
+
+`POST /sdcard/format` (JSON body, `{}` is fine — Mongoose leaves a body-less POST
+hanging) wipes the card, then re-provisions it: fresh ring, then the config mirror.
+Asynchronous; the response is `{"msg":"started"}` and `sd_status` walks
+`formatting` → `creating log` → `mounted`. `409 busy` while a job runs, `404` with
+no card. The GUI has a Format button with a confirmation in the storage table.
+Budget several minutes: 4.7 min for the format alone on a 32 GB card, plus the ring.
+
+Automatic format of a card that will not mount is **off by default** and behind
+`-D SD_FORMAT_ON_MOUNT_FAIL`: on this board an unmountable card is more often the
+DAT3 / R33 wiring than a bad filesystem, and erasing a card on that diagnosis is
+the wrong default.
 
 `/energy` serves from whichever store is live, through a small cursor that dispatches
 between the two; the JSON is identical either way. Note the consequence: history

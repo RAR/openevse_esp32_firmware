@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>             // Save config settings
 #include <ConfigJson.h>
+#include "config_backup.h"
 #include <LittleFS.h>
 
 #include "app_config.h"
@@ -394,6 +395,10 @@ ConfigOpt *opts[] =
 ConfigJson user_config(opts, sizeof(opts) / sizeof(opts[0]), EEPROM_SIZE, CONFIG_OFFSET);
 ConfigJson factory_config(opts, sizeof(opts) / sizeof(opts[0]), EEPROM_SIZE, FACTORY_OFFSET);
 
+// Whether user_config.load() found a stored config at boot (false = running on
+// defaults). Read by boot to decide whether a card mirror should be restored.
+static bool config_loaded = false;
+
 // -------------------------------------------------------------------
 // config version handling
 // -------------------------------------------------------------------
@@ -438,7 +443,8 @@ config_load_settings()
   user_config.onChanged(config_changed);
 
   factory_config.load(false);
-  if(!user_config.load(true))
+  config_loaded = user_config.load(true);
+  if(!config_loaded)
   {
 #if ENABLE_CONFIG_V1_IMPORT
     DBUGF("No JSON config found, trying v1 settings");
@@ -481,6 +487,7 @@ config_load_settings()
     // Save any changes
     if(flagsChanged.set(new_changed)) {
       user_config.commit();
+      config_backup_to_card();
     }
   }
 
@@ -559,6 +566,9 @@ void config_commit(bool factory)
   ConfigJson &config = factory ? factory_config : user_config;
   config.set("factory_write_lock", true);
   config.commit();
+  if(!factory) {
+    config_backup_to_card();
+  }
 }
 
 // Persist user config without touching the factory_write_lock flag.
@@ -567,6 +577,12 @@ void config_commit(bool factory)
 void config_user_commit()
 {
   user_config.commit();
+  config_backup_to_card();
+}
+
+bool config_loaded_from_storage()
+{
+  return config_loaded;
 }
 
 bool config_https_enabled()
