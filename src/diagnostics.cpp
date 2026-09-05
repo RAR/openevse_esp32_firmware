@@ -127,6 +127,14 @@ static const char *diagnostics_reset_reason_name(uint32_t reason)
     case ESP_RST_DEEPSLEEP:return "deepsleep";
     case ESP_RST_BROWNOUT: return "brownout";
     case ESP_RST_SDIO:     return "sdio";
+    // IDF 5.x additions (enum values, so guard by IDF version, not #ifdef).
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    case ESP_RST_USB:      return "usb";        // reset over USB-Serial-JTAG (esptool)
+    case ESP_RST_JTAG:     return "jtag";
+    case ESP_RST_EFUSE:    return "efuse";
+    case ESP_RST_PWR_GLITCH: return "pwr_glitch";
+    case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
+#endif
     default:               return "unknown";
   }
 }
