@@ -462,3 +462,89 @@ bool diagnostics_coredump_erase()
   return false;
 #endif
 }
+
+
+// ---------------------------------------------------------------------------
+// Internal-heap layout report
+// ---------------------------------------------------------------------------
+#if DIAG_HAVE_IDF
+namespace {
+struct HeapMapBlock { uintptr_t ptr; size_t size; };
+struct HeapMapState {
+  size_t live_n = 0, live_b = 0, free_n = 0, free_b = 0;
+  uint16_t hist_live[24] = {0};
+  uint16_t hist_free[24] = {0};
+  HeapMapBlock top_live[12] = {};
+  HeapMapBlock top_free[8] = {};
+  uintptr_t region_start = 0, region_end = 0;
+  int regions = 0;
+};
+
+static void heapmap_insert(HeapMapBlock *arr, size_t n, uintptr_t ptr, size_t size)
+{
+  for(size_t i = 0; i < n; i++) {
+    if(size > arr[i].size) {
+      for(size_t j = n - 1; j > i; j--) arr[j] = arr[j - 1];
+      arr[i] = { ptr, size };
+      return;
+    }
+  }
+}
+
+static bool heapmap_walker(walker_heap_into_t heap, walker_block_info_t b, void *user)
+{
+  HeapMapState *st = (HeapMapState *)user;
+  if(heap.start != (intptr_t)st->region_start) {
+    st->regions++;
+    st->region_start = heap.start;
+    st->region_end = heap.end;
+  }
+  int bucket = 0;
+  for(size_t v = b.size; v > 1 && bucket < 23; v >>= 1) bucket++;
+  if(b.used) {
+    st->live_n++; st->live_b += b.size; st->hist_live[bucket]++;
+    heapmap_insert(st->top_live, 12, (uintptr_t)b.ptr, b.size);
+  } else {
+    st->free_n++; st->free_b += b.size; st->hist_free[bucket]++;
+    heapmap_insert(st->top_free, 8, (uintptr_t)b.ptr, b.size);
+  }
+  return true;
+}
+} // namespace
+
+void diagnostics_heapmap(String &out)
+{
+  HeapMapState *st = new HeapMapState();   // ~500 B; keep it off the stack
+  heap_caps_walk(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, heapmap_walker, st);
+
+  char line[96];
+  out.reserve(2048);
+  snprintf(line, sizeof(line), "internal heap: %d region(s), live %u blocks / %u B, free %u blocks / %u B\n",
+           st->regions, (unsigned)st->live_n, (unsigned)st->live_b, (unsigned)st->free_n, (unsigned)st->free_b);
+  out += line;
+  snprintf(line, sizeof(line), "largest free block: %u B (min since boot %u B)\n",
+           (unsigned)heap_caps_get_largest_free_block(DIAG_HEAP_CAPS),
+           (unsigned)(UINT32_MAX == diag_largest_block_min ? 0 : diag_largest_block_min));
+  out += line;
+
+  out += "\nlargest live blocks:\n";
+  for(int i = 0; i < 12 && st->top_live[i].size; i++) {
+    snprintf(line, sizeof(line), "  %08x  %6u B\n", (unsigned)st->top_live[i].ptr, (unsigned)st->top_live[i].size);
+    out += line;
+  }
+  out += "\nlargest free gaps:\n";
+  for(int i = 0; i < 8 && st->top_free[i].size; i++) {
+    snprintf(line, sizeof(line), "  %08x  %6u B\n", (unsigned)st->top_free[i].ptr, (unsigned)st->top_free[i].size);
+    out += line;
+  }
+  out += "\nsize histogram (log2 bucket: live / free):\n";
+  for(int i = 3; i < 24; i++) {
+    if(0 == st->hist_live[i] && 0 == st->hist_free[i]) continue;
+    snprintf(line, sizeof(line), "  >=%7u B: %4u / %4u\n", 1u << i, st->hist_live[i], st->hist_free[i]);
+    out += line;
+  }
+  delete st;
+}
+#else
+void diagnostics_heapmap(String &out) { out += "n/a\n"; }
+#endif
