@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "sdlog_store.h"
+#include <unistd.h>
 #include "sdlog_ring.h"
 #include "sd_card.h"
 #include "debug.h"
@@ -151,9 +152,15 @@ bool sdlog_store_append(uint32_t timestamp, const int16_t cols[SDLOG_RECORD_COLS
   sdlog_encode(rec, raw);
 
   uint32_t index = _next_seq % SDLOG_CAPACITY;
+  // fflush() only hands the record to FATFS, whose sector window is not written
+  // to the card until something evicts it or fsync() forces it. On a board
+  // whose power goes with the EVSE's, that window is exactly what gets lost:
+  // the first card on the S3 board came up "empty ring" after every reset
+  // although the sample had been readable. One sector write per sample.
   if(fseek(_fp, (long)index * SDLOG_RECORD_BYTES, SEEK_SET) != 0 ||
      fwrite(raw, SDLOG_RECORD_BYTES, 1, _fp) != 1 ||
-     fflush(_fp) != 0)
+     fflush(_fp) != 0 ||
+     fsync(fileno(_fp)) != 0)
   {
     // Do not keep trying into a broken card: drop to not-ready so the caller
     // falls back to internal flash on this and every later sample.
