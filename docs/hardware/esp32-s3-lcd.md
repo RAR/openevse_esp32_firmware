@@ -51,9 +51,15 @@ allocations are smaller than that. The firmware moves two things itself:
 - **The LVGL object pool** — `lv_conf.h` takes the pool from PSRAM via
   `LV_MEM_POOL_ALLOC` on `BOARD_HAS_PSRAM` and grows it to 64 KB.
 
-What cannot move without rebuilding the IDF libraries (the arduino-as-IDF-component
-build): the WiFi driver's RX/TX buffers and lwIP's pools
-(`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`), and the Bluetooth controller memory.
+**The env now builds Arduino as an ESP-IDF component** (`framework = arduino, espidf`,
+same as `openevse_wifi_tft_v1`), so the Kconfig is ours. `sdkconfig.defaults.esp32s3`
+is the S3 seed (copied from the core's `esp32s3/sdkconfig`), `sdkconfig.defaults.s3lcd`
+is this board's overlay: octal PSRAM, qio flash, `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`
+(WiFi/lwIP pools in PSRAM), `MBEDTLS_EXTERNAL_MEM_ALLOC=y` (which replaces the runtime
+hook above; `psram_setup()` compiles out), and `BT_ENABLED=n`. Every knob must be
+checked in the generated `sdkconfig.openevse_s3_lcd*` after a build -- Kconfig drops
+unknown symbols silently (a `DYNAMIC_TX_BUFFER_NUM` line was, because this core uses
+static TX buffers). Cold build ~3 min instead of ~70 s.
 
 Two consequences worth carrying:
 
