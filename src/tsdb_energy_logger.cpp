@@ -33,7 +33,7 @@ bool TsdbEnergyLogger::init_db() {
     cfg.max_records = TSDB_CALC_MAX_RECORDS(budget, TSDB_NUM_COLS);
   }
   cfg.index_stride = 380;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)        // P4 has PSRAM
+#if defined(CONFIG_IDF_TARGET_ESP32P4) || defined(BOARD_HAS_PSRAM)   // P4, S3 LCD board
   cfg.alloc_strategy      = TSDB_ALLOC_PSRAM;
   cfg.buffer_pool_size    = 16 * 1024;
   cfg.use_paged_allocation= true;
