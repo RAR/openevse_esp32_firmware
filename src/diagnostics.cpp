@@ -268,6 +268,13 @@ void diagnostics_status(JsonDocument &doc)
   doc["heap_largest"] = largest;
   doc["heap_largest_min"] = UINT32_MAX == diag_largest_block_min ? 0 : diag_largest_block_min;
   doc["heap_min"] = (uint32_t)esp_get_minimum_free_heap_size();
+  // PSRAM, only on boards that have it, so /status is unchanged elsewhere. The
+  // internal figures above deliberately exclude it; these show what the SDK is
+  // routing into external RAM (every allocation >= 4 KB on the S3 LCD board).
+  if(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) {
+    doc["psram_free"] = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    doc["psram_largest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  }
   doc["reset_reason"] = diag_reset_reason;
   doc["reset_reason_name"] = diagnostics_reset_reason_name(diag_reset_reason);
   doc["stack_loop_min"] = UINT32_MAX == diag_stack_loop_min ? 0 : diag_stack_loop_min;
