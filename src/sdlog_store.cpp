@@ -17,16 +17,52 @@ static uint32_t _next_seq = 0;
 static uint32_t _oldest_seq = 0;   // lowest sequence still held
 static uint32_t _newest_ts = 0;
 
+// Read cache. A query walks records in sequence, and without this every one of
+// them is its own fseek + 32-byte fread, which FATFS turns into a fresh 512-byte
+// sector fetch over the 1-bit bus: ~10 ms a record, so a 500-point chart took
+// six seconds. One 4 KB block (128 records) serves a run of sequential reads
+// from a single multi-sector read. The cache is dropped whenever a slot in the
+// cached block is written, and when the store closes.
+#define SDLOG_CACHE_BYTES 4096
+#define SDLOG_CACHE_RECS  (SDLOG_CACHE_BYTES / SDLOG_RECORD_BYTES)
+static uint8_t *_cache = nullptr;
+static uint32_t _cache_block = UINT32_MAX;   // index / SDLOG_CACHE_RECS, or none
+static_assert(SDLOG_CAPACITY % SDLOG_CACHE_RECS == 0, "ring capacity must be a whole number of cache blocks");
+
+static void cache_drop()
+{
+  _cache_block = UINT32_MAX;
+}
+
 static bool slot_read(void *ctx, uint32_t index, uint8_t out[SDLOG_RECORD_BYTES])
 {
   (void)ctx;
   if(_fp == nullptr) {
     return false;
   }
-  if(fseek(_fp, (long)index * SDLOG_RECORD_BYTES, SEEK_SET) != 0) {
-    return false;
+
+  if(_cache == nullptr) {
+    if(fseek(_fp, (long)index * SDLOG_RECORD_BYTES, SEEK_SET) != 0) {
+      return false;
+    }
+    return fread(out, SDLOG_RECORD_BYTES, 1, _fp) == 1;
   }
-  return fread(out, SDLOG_RECORD_BYTES, 1, _fp) == 1;
+
+  uint32_t block = index / SDLOG_CACHE_RECS;
+  if(block != _cache_block)
+  {
+    // SDLOG_CAPACITY is a multiple of SDLOG_CACHE_RECS, so a block never runs
+    // off the end of the file.
+    if(fseek(_fp, (long)block * SDLOG_CACHE_BYTES, SEEK_SET) != 0 ||
+       fread(_cache, SDLOG_CACHE_BYTES, 1, _fp) != 1)
+    {
+      cache_drop();
+      return false;
+    }
+    _cache_block = block;
+  }
+  memcpy(out, _cache + (index % SDLOG_CACHE_RECS) * SDLOG_RECORD_BYTES, SDLOG_RECORD_BYTES);
+  return true;
 }
 
 // Create the ring at full size. Written in blocks rather than record-by-record:
@@ -115,6 +151,11 @@ bool sdlog_store_begin()
     return false;
   }
 
+  if(_cache == nullptr) {
+    _cache = (uint8_t *)malloc(SDLOG_CACHE_BYTES);   // PSRAM-eligible; nullptr just means uncached reads
+  }
+  cache_drop();
+
   SdlogRingScan scan;
   if(!sdlog_ring_scan(slot_read, nullptr, SDLOG_CAPACITY, scan)) {
     DBUGLN("[sdlog] head recovery failed");
@@ -167,6 +208,9 @@ bool sdlog_store_append(uint32_t timestamp, const int16_t cols[SDLOG_RECORD_COLS
   // whose power goes with the EVSE's, that window is exactly what gets lost:
   // the first card on the S3 board came up "empty ring" after every reset
   // although the sample had been readable. One sector write per sample.
+  if(index / SDLOG_CACHE_RECS == _cache_block) {
+    cache_drop();
+  }
   if(fseek(_fp, (long)index * SDLOG_RECORD_BYTES, SEEK_SET) != 0 ||
      fwrite(raw, SDLOG_RECORD_BYTES, 1, _fp) != 1 ||
      fflush(_fp) != 0 ||
@@ -189,6 +233,7 @@ bool sdlog_store_append(uint32_t timestamp, const int16_t cols[SDLOG_RECORD_COLS
 
 void sdlog_store_end()
 {
+  cache_drop();
   if(_fp != nullptr) {
     fclose(_fp);
     _fp = nullptr;
