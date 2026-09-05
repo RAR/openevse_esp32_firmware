@@ -71,7 +71,7 @@ static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 //
 // Internal DRAM, and on PSRAM boards (openevse_s3_lcd) that is enforced rather than
 // assumed -- see the note at the heap_caps_malloc() call. PSRAM is not idle on those
-// boards; the SDK already routes the network stack into it. What it must not hold is
+// boards; mbedTLS and the LVGL object pool are routed there. What it must not hold is
 // this buffer, which the CPU reads. docs/hardware/esp32-s3-lcd.md has the detail.
 //
 // This also fixes the wire format: 18 bpp, with a CPU-side RGB565->RGB666 conversion

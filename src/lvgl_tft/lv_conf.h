@@ -28,7 +28,17 @@
 // lv_used_max snapshot from /status -- LVGL peaks while two screens are
 // briefly live during a transition; re-measure with the host harness before
 // changing this.
+#if defined(BOARD_HAS_PSRAM) && !defined(EPOXY_DUINO)
+// Boards with PSRAM (openevse_s3_lcd): take the pool from external RAM and
+// give it room. Only the widget/style/render scratch lives here; the partial
+// draw buffer stays in internal DRAM (lvgl_panel.cpp).
+#undef LV_MEM_SIZE
+#define LV_MEM_SIZE (64U * 1024U)
+#define LV_MEM_POOL_INCLUDE "esp_heap_caps.h"
+#define LV_MEM_POOL_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
 #define LV_MEM_SIZE (24U * 1024U)
+#endif
 
 // Tick from Arduino millis() on-device. The native/EpoxyDuino host build advances
 // LVGL explicitly from lcd_lvgl.cpp so the C-only LVGL sources don't need to

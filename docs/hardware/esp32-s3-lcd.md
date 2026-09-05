@@ -27,45 +27,41 @@ external antenna (no PCB antenna).
 
 ### What the 8 MB of PSRAM is actually doing
 
-**It is not idle, and it is not something firmware assigns.** Arduino-ESP32 ships
-prebuilt IDF libraries, so `qio_opi/include/sdkconfig.h` is fixed and not editable
-from the app side. It sets:
+**Less than the sdkconfig suggests.** Arduino-ESP32 ships prebuilt IDF libraries, so
+`qio_opi/include/sdkconfig.h` is fixed and not editable from the app side. Measured
+on the first board (`psram_free` in `/status`): the SDK on its own puts about 10 KB
+there. What is set and what is not:
 
 ```
-CONFIG_SPIRAM_USE_MALLOC              1
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL   4096
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP  1
+CONFIG_SPIRAM_USE_MALLOC              1     PSRAM is in the general heap
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL   4096  malloc() >= 4 KB goes to PSRAM
 CONFIG_SPIRAM_MODE_OCT / SPEED_80M
+CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC     1     mbedTLS is pinned to internal DRAM
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP  NOT SET  WiFi/lwIP pools stay internal
 ```
 
-PSRAM is therefore part of the ordinary heap, and **every allocation of 4 KB or more
-goes there automatically** — TLS session buffers, Mongoose's connection and HTTP
-buffers, log staging, and (via `TRY_ALLOCATE_WIFI_LWIP`) the WiFi and lwIP pools.
-That is the memory headroom the `R8` part was bought for; it arrives by default
-rather than by code.
+So the 4 KB rule is the only thing that happens by default, and most of the firmware's
+allocations are smaller than that. The firmware moves two things itself:
+
+- **mbedTLS** — `psram_setup()` in `main.cpp` installs a PSRAM-preferring allocator
+  through `mbedtls_platform_set_calloc_free()` before the network comes up (the port
+  is built with `MBEDTLS_PLATFORM_MEMORY`, so this is a supported runtime swap).
+  SSL contexts, the 16 KB/4 KB record buffers and parsed certificate chains land in
+  PSRAM; on the stock board those are the largest contiguous internal allocations.
+- **The LVGL object pool** — `lv_conf.h` takes the pool from PSRAM via
+  `LV_MEM_POOL_ALLOC` on `BOARD_HAS_PSRAM` and grows it to 64 KB.
+
+What cannot move without rebuilding the IDF libraries (the arduino-as-IDF-component
+build): the WiFi driver's RX/TX buffers and lwIP's pools
+(`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`), and the Bluetooth controller memory.
 
 Two consequences worth carrying:
 
 - **Anything that must be internal has to say so.** The LVGL draw buffer already
   does — `heap_caps_malloc(..., MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)` — because a
-  plain 30 KB `malloc()` would now land in PSRAM. Same rule for any future DMA buffer.
-- **`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is 0** in this config, so no internal pool
-  is held back for allocations that *must* be internal. Espressif ships it that way for
-  every Arduino S3 PSRAM board, so it is not ours to change — but it means the draw
-  buffer competes with everything else on a fragmented heap, and its failure branch is
-  a real boot-time mode rather than a hypothetical. Internal-heap exhaustion stays the
-  thing to watch and `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` stays the
-  metric, exactly as on the ESP32 boards.
-
-`CONFIG_SPIRAM_MODE_OCT` and `CONFIG_SPIRAM_SPEED 80` in the same file are consistent
-with the N16R8's octal PSRAM at 80 MHz.
-
-**The design doc's §1 justifies the `R8` part by the LVGL framebuffer not fitting
-internally.** That is not how it plays out: the framebuffer stays internal
-deliberately (the flush is CPU-bound, so PSRAM would only be slower), and the PSRAM
-earns its place by absorbing the network stack automatically. The purchase is right
-either way — the stated reason belongs on the hardware side to update, not to be
-reasoned around here.
+  DMA-capable or latency-sensitive buffer has no business in external RAM.
+- **`heap_largest` / `heap_largest_min` in `/status` are internal-only** by design;
+  `psram_free` / `psram_largest` show the external side.
 
 ## Pin map
 

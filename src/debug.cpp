@@ -57,6 +57,13 @@ void debug_setup()
   // consoles; on a board this tight the 2KB of contiguous heap is worth more
   // than the extra history.
   DEBUG_PORT.begin(115200);
+#if defined(ESP32) && ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // DEBUG_PORT is the USB-Serial-JTAG CDC. Once the host stops reading, its TX
+  // ring fills and HWCDC::write() then blocks per byte for the TX timeout
+  // (100 ms default): one JSON event serialised to the console outlasts the
+  // 5 s task watchdog. Drop output instead of waiting when nobody drains it.
+  DEBUG_PORT.setTxTimeoutMs(0);
+#endif
   SerialDebug.begin(1024);
 
   RAPI_PORT.begin(115200);
