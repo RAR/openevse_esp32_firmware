@@ -7,6 +7,9 @@
 #include <LittleFS.h>
 
 #include "app_config.h"
+#if defined(ESP32) && !defined(EPOXY_DUINO)
+#include <esp_idf_version.h>
+#endif
 #include "app_config_mqtt.h"
 #include "app_config_mode.h"
 #include "certificates.h"
@@ -864,6 +867,18 @@ bool config_serialize(DynamicJsonDocument &doc, bool longNames, bool compactOutp
   doc["protocol"] = "-";
   doc["espinfo"] = ESPAL.getChipInfo();
   doc["espflash"] = ESPAL.getFlashChipSize();
+#if defined(ESP32) && !defined(EPOXY_DUINO)
+  // Structured form of espinfo for the UI: model, silicon revision
+  // (major*100+minor, e.g. 2 == v0.2), cores, and PSRAM size (0 when none).
+  doc["chip_model"] = ESP.getChipModel();
+#if ESP_IDF_VERSION_MAJOR >= 5
+  doc["chip_rev"] = (uint32_t)ESP.getChipRevision();          // already major*100+minor
+#else
+  doc["chip_rev"] = (uint32_t)ESP.getChipRevision() * 100;    // IDF 4 reports the major only
+#endif
+  doc["chip_cores"] = (uint32_t)ESP.getChipCores();
+  doc["psram_size"] = (uint32_t)ESP.getPsramSize();
+#endif
   doc["heap_size"] = (uint32_t)ESP.getHeapSize();
   doc["littlefs_size"] = (uint32_t)LittleFS.totalBytes();
   doc["littlefs_used"] = (uint32_t)LittleFS.usedBytes();
