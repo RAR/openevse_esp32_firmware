@@ -370,6 +370,21 @@ void loop()
   ota_loop();
   rapiSender.loop();
 
+#ifdef HEAP_DEBUG_INTEGRITY
+  // Heap-corruption trap (openevse_s3_lcd_heapdebug env): walk every heap
+  // and abort on the first bad block, so a corrupter dies within ~10 s of
+  // its write instead of whenever the block is next reused.
+  {
+    static uint32_t last_check = 0;
+    if(millis() - last_check >= 10000) {
+      last_check = millis();
+      if(!heap_caps_check_integrity_all(true)) {
+        abort();
+      }
+    }
+  }
+#endif
+
   Profile_Start(MicroTask);
   MicroTask.update();
   Profile_End(MicroTask, 10);
