@@ -509,6 +509,32 @@ first person to power a board does not have to re-derive it.
 | Firmware cannot tell USB from EVSE power | v1.2 has no sense line at all. `PWR_ST` is v1.3-only. |
 | No pilot voltage anywhere | There is no ADC on either revision. Pilot state comes over RAPI. |
 
+### Silkscreen for the next fab — every part with a direction
+
+v1.2 marks JP5's pads and nothing else. J1 is DNP and gets hand-soldered, the
+WS2812B footprint is the prime suspect for the dead LED_DIN net, and the
+JST-PH headers carry cable-centric names — so the orientation of most of what a
+person touches on this board is currently inferred from the schematic. Each of
+these needs a mark on the silk, not in a document:
+
+| Ref | Part | What to mark | Why it matters |
+|---|---|---|---|
+| **J1** | ER-TFT035-6 FPC | Pin 1 **and** contact side (contacts up or down) | DNP, hand-fitted. A 0.5 mm FPC seats either way round; reversed or contacts-down it inits clean over a write-only bus and shows nothing. Add a "1" at the pin-1 end and an arrow for the cable's contact face. |
+| **LED1–LED4** | WS2812B-MINI 3535 | Pin-1 dot per LED plus a DIN → DOUT arrow along the chain | LED_DIN reads 1.1 V on every board with IO18 driven high: the footprint's pin mapping is suspect. A pin-1 mark lets that be checked against the die with a loupe instead of a redesign. |
+| **JP3** | LED strip out | `3V3` / `GND` / `DOUT` per pin | Three pins, no key; a strip plugged in backwards puts 3.3 V on its data line. |
+| **JP1**, **JP2** | JST-PH-6 RAPI / AUX | Pin 1, plus **board-side** names (`GND` / `—` / `5V_IN` / `RX`(IO2) / `TX`(IO1) / `—`) | The current names are the controller cable's. "RX" on this board is the pin the controller *drives*, which is exactly the thing someone probing it gets wrong. JP5 already does this the right way. |
+| **D3**, **D2** | series diodes on the RAPI RX / AUX RX nets | Cathode band | Anode is on the GPIO side; fitted backwards the UART simply never receives, with no other symptom. |
+| **BT1** | CR2032 holder | `+` on the holder outline | Cell in backwards leaves the RTC with no backup and the firmware reporting a lost clock only after the next power cut. |
+| **SW1**, **SW2** | tact switches | `BOOT` / `RESET` | Both are unlabelled; the difference is holding one while pressing the other. |
+| **JP4** | USB-C | nothing | Keyed. |
+| **J2** | microSD | nothing | Keyed by the push-push cage. |
+| **U.FL** | antenna | `ANT` | The connector is unambiguous; the label saves the fitter searching for it under the module. |
+| **ICs** (DS3231, MCP9808, TPS2116, USBLC6) | — | Pin-1 dot on the courtyard | Standard, and the two I²C parts are the ones a rework touches. |
+
+Also worth a silk line: **`v1.2` / `v1.3` revision text** where a phone photo will catch
+it. The two revisions differ in the backlight rail and three GPIOs, and the difference
+is not visible on the board.
+
 ### Order of operations
 
 1. **Flash over USB-C** and watch the same cable (`pio device monitor`). If nothing
