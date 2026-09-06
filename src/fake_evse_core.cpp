@@ -105,12 +105,21 @@ std::string fake_evse_handle(FakeEvseState &st, const std::string &cmd) {
     return rapi_frame("$OK 0 0 0 0");
   } else if (c == "$GI") {                          // serial
     return rapi_frame("$OK FAKE-0001");
-  } else if (c == "$SC") {                          // set current -> clamp to [min,maxCfg], echo pilot
+  } else if (c == "$SC") {                          // set current, echo the resulting pilot
+    // Mirrors J1772EVSEController::SetCurrentCapacity(): a bare "$SC n" is
+    // the EEPROM write, clamped to the hardware max and raising the configured
+    // cap with it; "$SC n V" (any third token) is volatile and cannot exceed
+    // the configured cap. Clamping the bare form to max_cfg instead used to
+    // wedge the WiFi firmware in a "$SC 48 V" retry loop: it recorded the
+    // requested 48 as its configured max while every reply said 32.
     if (t.size() >= 2) {
       long req = strtol(t[1].c_str(), nullptr, 10);
-      if (req < st.min_a)      req = st.min_a;
-      if (req > st.max_cfg_a)  req = st.max_cfg_a;
+      bool volatile_set = t.size() >= 3;
+      long cap = volatile_set ? st.max_cfg_a : st.max_hw_a;
+      if (req < st.min_a) req = st.min_a;
+      if (req > cap)      req = cap;
       st.pilot_a = req;
+      if (!volatile_set) st.max_cfg_a = req;
     }
     snprintf(buf, sizeof(buf), "$OK %ld", st.pilot_a);
     return rapi_frame(buf);

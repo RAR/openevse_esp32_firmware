@@ -115,10 +115,31 @@ TEST_CASE("vflags(): EV_CONNECTED tracks plug, CHARGING_ON tracks relay") {
 }
 
 TEST_CASE("$SC clamps pilot to capacity range") {
-  FakeEvseState st;                 // min_a=6, max_cfg_a=32
-  fake_evse_handle(st, "$SC 99");   CHECK(st.pilot_a == 32);   // clamped high
+  FakeEvseState st;                 // min_a=6, max_hw_a=48, max_cfg_a=32
+  fake_evse_handle(st, "$SC 99");   CHECK(st.pilot_a == 48);   // clamped to hardware max
   fake_evse_handle(st, "$SC 1");    CHECK(st.pilot_a == 6);    // clamped low
   fake_evse_handle(st, "$SC 16");   CHECK(st.pilot_a == 16);   // in range
+}
+
+TEST_CASE("bare $SC writes the configured cap, $SC V is bounded by it") {
+  FakeEvseState st;                 // max_hw_a=48, max_cfg_a=32
+  // Volatile set above the configured cap is clamped and echoes the clamp.
+  auto v = toks(fake_evse_handle(st, "$SC 48 V"));
+  CHECK(v[1] == "32");
+  CHECK(st.pilot_a == 32);
+  CHECK(st.max_cfg_a == 32);
+  // The bare (EEPROM) form raises the cap, up to the hardware limit.
+  auto e = toks(fake_evse_handle(st, "$SC 48"));
+  CHECK(e[1] == "48");
+  CHECK(st.max_cfg_a == 48);
+  auto gc = toks(fake_evse_handle(st, "$GC"));      // min maxHw pilot maxCfg
+  CHECK(gc[4] == "48");
+  // Now the volatile form reaches 48 too, so the firmware's retry converges.
+  fake_evse_handle(st, "$SC 24 V"); CHECK(st.pilot_a == 24); CHECK(st.max_cfg_a == 48);
+  fake_evse_handle(st, "$SC 48 V"); CHECK(st.pilot_a == 48);
+  // Lowering the cap with a bare set drags the volatile ceiling down.
+  fake_evse_handle(st, "$SC 20");   CHECK(st.max_cfg_a == 20);
+  fake_evse_handle(st, "$SC 40 V"); CHECK(st.pilot_a == 20);
 }
 
 TEST_CASE("$SC sets pilot and echoes it; $GG follows charge state") {
