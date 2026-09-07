@@ -1,0 +1,5 @@
+# Heap-corruption trap overlay (diag/heap-trap-live): comprehensive poisoning so
+# freed blocks are 0xFE-filled and every block carries head/tail canaries, checked
+# by the 10 s heap_trap_tick() in loop(). Not for release builds.
+# CONFIG_HEAP_POISONING_LIGHT is not set
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y

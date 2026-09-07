@@ -54,6 +54,9 @@
 #include "temp_throttle.h"
 #include "limit.h"
 #include "diagnostics.h"
+#ifdef HEAP_DEBUG_INTEGRITY
+#include "heap_trap.h"
+#endif
 #include "boost.h"
 
 #if defined(ENABLE_PN532)
@@ -311,6 +314,10 @@ void loop()
   flash_migrate_loop();
   ota_loop();
   rapiSender.loop();
+
+#ifdef HEAP_DEBUG_INTEGRITY
+  heap_trap_tick();
+#endif
 
   Profile_Start(MicroTask);
   MicroTask.update();

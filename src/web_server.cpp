@@ -28,6 +28,9 @@ typedef const __FlashStringHelper *fstr_t;
 #include "emonesp.h"
 #include "web_server.h"
 #include "diagnostics.h"
+#ifdef HEAP_DEBUG_INTEGRITY
+#include "heap_trap.h"
+#endif
 #ifdef ENABLE_TSDB
 #include "tsdb_energy_logger.h"
 #endif
@@ -2113,6 +2116,27 @@ void web_server_setup()
     serializeJson(doc, *response);
     request->send(response);
   });
+
+#ifdef HEAP_DEBUG_INTEGRITY
+  server.on("/debug/heaptrap$", [](MongooseHttpServerRequest *request) {
+    MongooseHttpServerResponseStream *response;
+    if(false == requestPreProcess(request, response, CONTENT_TYPE_JSON)) {
+      return;
+    }
+    if(HTTP_DELETE == request->method()) {
+      heap_trap_clear();
+      response->setCode(200);
+      response->print(F("{\"msg\":\"cleared\"}"));
+      request->send(response);
+      return;
+    }
+    DynamicJsonDocument doc(3072);
+    heap_trap_json(doc);
+    response->setCode(200);
+    serializeJson(doc, *response);
+    request->send(response);
+  });
+#endif
 
   server.on("/debug/crash/raw$", [](MongooseHttpServerRequest *request) {
     dumpRequest(request);
