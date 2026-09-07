@@ -441,6 +441,12 @@ int main(int argc, char **argv)
   std::vector<int> clients;
   std::vector<std::string> client_rx;
   double last_tick = now_s();
+  // The WiFi firmware polls at least once a second ($SY when idle). A stalled
+  // CP2102 read pipe (kernel "urb stopped: -32") surfaces as silence, not as
+  // an error: read() returns 0 bytes forever and poll() is clean. Reopen on
+  // silence rather than trusting the fd.
+  const double kSilenceReopenS = 10.0;
+  double last_rx = now_s();
   logf("INIT %s", describe(st).c_str());
 
   while(!g_stop) {
@@ -453,10 +459,15 @@ int main(int argc, char **argv)
     int rc = poll(pfds.data(), pfds.size(), 100);
     if(rc < 0 && errno != EINTR) { logf("ERR  poll: %s", strerror(errno)); break; }
 
-    if(!pty && (g_port_lost || (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)))) {
+    if(!pty && (g_port_lost || (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) ||
+                now_s() - last_rx > kSilenceReopenS)) {
+      if(now_s() - last_rx > kSilenceReopenS) {
+        logf("PORT no frames for %.0f s", now_s() - last_rx);
+      }
       fd = reopen_serial(fd, port, baud);
       if(fd < 0) break;
       rx.clear();
+      last_rx = now_s();
       continue;
     }
 
@@ -466,6 +477,7 @@ int main(int argc, char **argv)
       ssize_t n = read(fd, buf, sizeof(buf));
       if(n > 0) {
         rx.append(buf, (size_t)n);
+        last_rx = now_s();
       } else if(n == 0) {
         // PTY with no slave attached keeps poll() readable; do not spin on it.
         usleep(20000);
