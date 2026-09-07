@@ -195,6 +195,16 @@ static int open_pty(std::string &name_out)
   return fd;
 }
 
+static volatile sig_atomic_t g_stop = 0;
+static void on_signal(int) { g_stop = 1; }
+
+// Set when the port fails underneath us. A CP2102 whose bulk-in URB stalls
+// (kernel: "urb stopped: -32") keeps its device node but every read() fails
+// until the tty is reopened; poll() reports POLLERR/POLLHUP. Before this the
+// tool sat on the dead fd indefinitely and the firmware lost its controller
+// without any warning here.
+static bool g_port_lost = false;
+
 static void write_all(int fd, const std::string &data)
 {
   size_t off = 0;
@@ -207,8 +217,29 @@ static void write_all(int fd, const std::string &data)
       continue;
     }
     logf("ERR  write: %s", strerror(errno));
+    if(errno == EIO || errno == ENXIO || errno == ENODEV || errno == EPIPE) {
+      g_port_lost = true;
+    }
     return;
   }
+}
+
+// Close a failed port and retry opening it until it comes back or we are
+// told to stop. Returns the new fd, or -1 on stop.
+static int reopen_serial(int fd, const char *path, int baud)
+{
+  logf("PORT %s lost; reopening", path);
+  if(fd >= 0) close(fd);
+  while(!g_stop) {
+    int nfd = open_serial(path, baud);
+    if(nfd >= 0) {
+      logf("PORT %s reopened", path);
+      g_port_lost = false;
+      return nfd;
+    }
+    usleep(500000);
+  }
+  return -1;
 }
 
 // ───────────────────────────── control channel ─────────────────────────────
@@ -316,8 +347,6 @@ static std::string control_command(FakeEvseState &st, const std::string &line, b
 
 // ───────────────────────────── main ─────────────────────────────
 
-static volatile sig_atomic_t g_stop = 0;
-static void on_signal(int) { g_stop = 1; }
 
 static void usage(const char *argv0)
 {
@@ -424,6 +453,13 @@ int main(int argc, char **argv)
     int rc = poll(pfds.data(), pfds.size(), 100);
     if(rc < 0 && errno != EINTR) { logf("ERR  poll: %s", strerror(errno)); break; }
 
+    if(!pty && (g_port_lost || (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)))) {
+      fd = reopen_serial(fd, port, baud);
+      if(fd < 0) break;
+      rx.clear();
+      continue;
+    }
+
     // ── serial: read, split on CR/LF, answer each frame ──
     if(pfds[0].revents & POLLIN) {
       char buf[512];
@@ -433,6 +469,9 @@ int main(int argc, char **argv)
       } else if(n == 0) {
         // PTY with no slave attached keeps poll() readable; do not spin on it.
         usleep(20000);
+      } else if(errno != EAGAIN && errno != EINTR) {
+        logf("ERR  read: %s", strerror(errno));
+        if(!pty) { g_port_lost = true; continue; }
       }
       size_t pos;
       while((pos = rx.find_first_of("\r\n")) != std::string::npos) {
