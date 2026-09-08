@@ -975,6 +975,47 @@ static bool vehiclePushAccepted()
 // Returns status json
 // url: /status
 // -------------------------------------------------------------------
+#ifdef HEAP_DEBUG_INTEGRITY
+// Per-client hit counter for GET /status: who is polling this unit?
+#define STATUS_HITS_SLOTS 12
+struct StatusHit { uint32_t ip; uint32_t hits; uint32_t last_ms; };
+static StatusHit status_hits[STATUS_HITS_SLOTS] = {};
+static uint32_t status_hits_overflow = 0;
+struct PeekRequest : MongooseHttpServerRequest {
+  static uint32_t remoteIp(MongooseHttpServerRequest *r) {
+    mg_connection *nc = static_cast<PeekRequest *>(r)->_nc;
+    return nc ? nc->sa.sin.sin_addr.s_addr : 0;
+  }
+};
+static void status_hits_record(MongooseHttpServerRequest *request) {
+  uint32_t ip = PeekRequest::remoteIp(request);
+  for(int i = 0; i < STATUS_HITS_SLOTS; i++) {
+    if(status_hits[i].ip == ip || status_hits[i].hits == 0) {
+      status_hits[i].ip = ip;
+      status_hits[i].hits++;
+      status_hits[i].last_ms = millis();
+      return;
+    }
+  }
+  status_hits_overflow++;
+}
+static void status_hits_json(JsonDocument &doc) {
+  JsonArray arr = doc.createNestedArray("clients");
+  for(int i = 0; i < STATUS_HITS_SLOTS; i++) {
+    if(status_hits[i].hits == 0) continue;
+    JsonObject o = arr.createNestedObject();
+    uint32_t ip = status_hits[i].ip;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u", ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
+    o["ip"] = buf;
+    o["hits"] = status_hits[i].hits;
+    o["ago_s"] = (millis() - status_hits[i].last_ms) / 1000;
+  }
+  doc["overflow"] = status_hits_overflow;
+  doc["uptime_s"] = millis() / 1000;
+}
+#endif
+
 void handleStatusPost(MongooseHttpServerRequest *request, MongooseHttpServerResponseStream *response)
 {
   String body = request->body().toString();
@@ -1092,6 +1133,9 @@ handleStatus(MongooseHttpServerRequest *request)
     // this one calls nothing that re-enters the HTTP layer.
     static DynamicJsonDocument doc(STATUS_JSON_CAPACITY);
     doc.clear();
+#ifdef HEAP_DEBUG_INTEGRITY
+    status_hits_record(request);
+#endif
 
     uint32_t probe = diagnostics_probe_begin();
     buildStatus(doc);
@@ -2118,6 +2162,17 @@ void web_server_setup()
   });
 
 #ifdef HEAP_DEBUG_INTEGRITY
+  server.on("/debug/statushits$", [](MongooseHttpServerRequest *request) {
+    MongooseHttpServerResponseStream *response;
+    if(false == requestPreProcess(request, response, CONTENT_TYPE_JSON)) {
+      return;
+    }
+    DynamicJsonDocument doc(1536);
+    status_hits_json(doc);
+    response->setCode(200);
+    serializeJson(doc, *response);
+    request->send(response);
+  });
   server.on("/debug/heaptrap$", [](MongooseHttpServerRequest *request) {
     MongooseHttpServerResponseStream *response;
     if(false == requestPreProcess(request, response, CONTENT_TYPE_JSON)) {
