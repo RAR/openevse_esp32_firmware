@@ -47,6 +47,9 @@ class Mqtt : public MicroTasks::Task {
     uint32_t _configVersion = 0;
 
     String _lastWill = "";
+    // Both of these are handed to MongooseMqttClient as pointers and read
+    // when the CONNECT packet is built, so they must outlive the call.
+    String _clientId = "";
     unsigned long _loop_timer = 0; // Timer for periodic publishing tasks
 
     // Status observability

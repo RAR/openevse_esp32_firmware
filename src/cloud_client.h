@@ -88,6 +88,16 @@ class CloudClient : public MicroTasks::Task, public EvseCloudAgentHost
     char _thing[CLOUD_THING_LEN];
     char _topic[CLOUD_TOPIC_BUF];      // scratch, publish() only
 
+    // The last will MUST outlive attemptConnection().
+    // MongooseMqttClient::setLastWillAndTestimment() stores the two
+    // pointers and nothing else; the CONNECT packet is not built until
+    // the MG_EV_CONNECT handler runs, after the TLS handshake. Stack
+    // buffers here sent IoT Core whatever the stack happened to hold and
+    // every CONNECT was refused INVALID_TOPIC, with no client id logged
+    // because the packet itself never parsed.
+    char _willTopic[CLOUD_TOPIC_BUF];
+    char _willPayload[EVSE_CLOUD_AGENT_LWT_BUF];
+
     // Connection state
     bool _connecting;
     long _nextReconnectAttempt;

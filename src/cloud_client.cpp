@@ -259,16 +259,14 @@ void CloudClient::attemptConnection()
 
   // The last will must be installed before the connect, and it is the
   // presence topic - this connection has no announce topic.
-  char will_payload[EVSE_CLOUD_AGENT_LWT_BUF];
-  char will_topic[CLOUD_TOPIC_BUF];
-  if(0 == evse_cloud_agent_lwt_payload(will_payload, sizeof(will_payload)) ||
-     0 == cloud_topic_presence(will_topic, sizeof(will_topic), _thing))
+  if(0 == evse_cloud_agent_lwt_payload(_willPayload, sizeof(_willPayload)) ||
+     0 == cloud_topic_presence(_willTopic, sizeof(_willTopic), _thing))
   {
     DBUGLN("Cannot build the cloud last will, not connecting");
     _connecting = false;
     return;
   }
-  _client.setLastWillAndTestimment(will_topic, will_payload, true);
+  _client.setLastWillAndTestimment(_willTopic, _willPayload, true);
 
   _client.setRejectUnauthorized(config_mqtt_reject_unauthorized());
 

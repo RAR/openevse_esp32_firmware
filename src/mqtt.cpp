@@ -241,9 +241,14 @@ void Mqtt::attemptConnection() {
   // which is what was hard-wired here before, so nothing changes unless it
   // is set. The cloud connection does not read this: its client id is
   // always its thing name, derived in cloud_client.cpp.
-  String client_id = mqtt_client_id.length() > 0 ? mqtt_client_id : esp_hostname;
+  //
+  // It is a MEMBER, not a local: connect() stores the pointer and the
+  // CONNECT packet is built later, in the MG_EV_CONNECT handler. A local
+  // String here dangled by then and the broker closed every connection.
+  // This is the same lifetime rule the last will follows below.
+  _clientId = mqtt_client_id.length() > 0 ? mqtt_client_id : esp_hostname;
 
-  _connecting = _mqttclient.connect((MongooseMqttProtocol)config_mqtt_protocol(), mqtt_host, client_id, [this]() {
+  _connecting = _mqttclient.connect((MongooseMqttProtocol)config_mqtt_protocol(), mqtt_host, _clientId, [this]() {
     this->onMqttConnect();
   });
 
