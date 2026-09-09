@@ -19,6 +19,7 @@
 #include "scheduler.h"
 #include "current_shaper.h"
 #include "home_battery.h"
+#include "cloud_client.h"
 
 Mqtt mqtt(evse); // global instance
 
@@ -118,6 +119,18 @@ unsigned long Mqtt::loop(MicroTasks::WakeReason reason) {
     web_server_event(doc);
   }
 
+  // The cloud client's chip policy and heap rule decide whether this
+  // publisher may run at all: on a one-connection chip with the cloud
+  // configured, the cloud wins and this connection stays down.
+  if (!cloudClient.localPublisherAllowed()) {
+    if (_mqttclient.connected()) {
+      DBUGF("Local MQTT stopped: %s", cloudClient.localStopReason());
+      _mqttclient.disconnect();
+    }
+    _connecting = false;
+    return MQTT_LOOP_INTERVAL;
+  }
+
   // Manage connection state
   if (net.isConnected() && config_mqtt_enabled() && !_mqttclient.connected() && !_connecting) {
     long now = millis();
@@ -181,7 +194,8 @@ unsigned long Mqtt::loop(MicroTasks::WakeReason reason) {
 }
 
 void Mqtt::attemptConnection() {
-  if (!config_mqtt_enabled() || _connecting || _mqttclient.connected()) {
+  if (!config_mqtt_enabled() || !cloudClient.localPublisherAllowed() ||
+      _connecting || _mqttclient.connected()) {
     return;
   }
   _connecting = true;
@@ -223,7 +237,13 @@ void Mqtt::attemptConnection() {
     }
   }
 
-  _connecting = _mqttclient.connect((MongooseMqttProtocol)config_mqtt_protocol(), mqtt_host, esp_hostname, [this]() {
+  // The client id for THIS (local) connection. Defaults to the hostname,
+  // which is what was hard-wired here before, so nothing changes unless it
+  // is set. The cloud connection does not read this: its client id is
+  // always its thing name, derived in cloud_client.cpp.
+  String client_id = mqtt_client_id.length() > 0 ? mqtt_client_id : esp_hostname;
+
+  _connecting = _mqttclient.connect((MongooseMqttProtocol)config_mqtt_protocol(), mqtt_host, client_id, [this]() {
     this->onMqttConnect();
   });
 

@@ -35,6 +35,7 @@ typedef const __FlashStringHelper *fstr_t;
 #include "app_config.h"
 #include "net_manager.h"
 #include "mqtt.h"
+#include "cloud_client.h"
 #include "ocpp.h"
 #include "input.h"
 #include "emoncms.h"
@@ -630,6 +631,13 @@ void buildStatus(DynamicJsonDocument &doc) {
   }
 
   doc["ocpp_connected"] = (int)OcppTask::isConnected();
+
+  // Cloud client. local_mqtt_disabled_reason is "" while the local
+  // publisher is free to run, and names the reason when it is not, so
+  // the GUI can say why rather than showing a dead MQTT panel.
+  doc["cloud_connected"] = (int)cloudClient.isConnected();
+  doc["cloud_thing"]     = cloudClient.getThing();
+  doc["local_mqtt_disabled_reason"] = cloudClient.localStopReason();
 
 #if defined(ENABLE_PN532) || defined(ENABLE_RFID)
   doc["rfid_failure"] = (int) rfid.communicationFails();

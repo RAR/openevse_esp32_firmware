@@ -47,6 +47,9 @@ paths:
                     packets_sent: 22307
                     packets_success: 22290
                     mqtt_connected: 1
+                    cloud_connected: 1
+                    cloud_thing: evse-3076f5ec2760
+                    local_mqtt_disabled_reason: one_connection
                     free_heap: 203268
                     comm_sent: 335139
                     comm_success: 335139

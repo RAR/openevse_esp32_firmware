@@ -26,6 +26,7 @@ UI — if your unit looks different, check
 ## Integrations & access control
 
 - [MQTT, Home Assistant, EmonCMS, OhmConnect](integrations.md)
+- [Cloud client](cloud.md)
 - [OCPP](ocpp.md) — connect to a charge-point management system
 - [RFID](rfid.md) — card-based authorisation
 - [Vehicle](vehicle.md) — state of charge and range from your car

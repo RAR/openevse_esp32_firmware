@@ -309,6 +309,17 @@ class Scheduler : public MicroTasks::Task
 
     bool removeEvent(uint32_t id);
 
+    // Stored events by slot, for callers that need to walk the schedule
+    // without serialising the whole thing into a JSON document (the
+    // cloud client builds a fixed-size control document from this).
+    // Returns NULL for an empty slot or an index past the end.
+    Event *eventAt(size_t index) {
+      if(index >= SCHEDULER_MAX_EVENTS) {
+        return NULL;
+      }
+      return _events[index].isValid() ? &_events[index] : NULL;
+    }
+
     EventInstance &getNextEvent(EvseState type = EvseState::Value::None);
 
     bool deserialize(String& json);

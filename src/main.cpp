@@ -39,6 +39,7 @@
 #include "input.h"
 #include "emoncms.h"
 #include "mqtt.h"
+#include "cloud_client.h"
 #include "divert.h"
 #include "ota.h"
 #include "lcd.h"
@@ -263,6 +264,10 @@ void setup()
   input_setup();
 
   mqtt.begin();
+
+  // The cloud client owns its own MQTT connection; the heap rule and the
+  // chip policy decide whether the local publisher above may also run.
+  cloudClient.begin();
 
   ocpp.begin(evse, lcd, eventLog, rfid);
   DBUGF("After ocpp.begin: %d", ESPAL.getFreeHeap());

@@ -88,6 +88,24 @@ extern String mqtt_home_battery_soc;
 extern String mqtt_home_battery_power;
 extern String mqtt_announce_topic;
 
+// Client id for the LOCAL broker connection. Defaults to the hostname, which
+// is what the firmware used before this was configurable. The CLOUD connection
+// does not read this: its client id is always cloud_thing, because the AWS IoT
+// device policy resolves through ${iot:Connection.Thing.ThingName} and a
+// mismatch is refused at connect rather than merely losing a topic.
+extern String mqtt_client_id;
+
+// Overwatt cloud client settings. This is a second, independent MQTT
+// connection carrying the evse-cloud-agent contract and nothing else; the
+// local publisher above keeps its own socket and its own format.
+#ifdef ENABLE_CLOUD_CLIENT
+extern String cloud_server;
+extern uint32_t cloud_port;
+extern String cloud_thing;
+extern String cloud_certificate_id;
+extern uint32_t cloud_agent_interval;
+#endif
+
 // OCPP 1.6 Settings
 extern String ocpp_server;
 extern String ocpp_chargeBoxId;
@@ -161,6 +179,7 @@ extern uint32_t flags;
 
 #define CONFIG_SERVICE_EMONCMS      (1 << 0)
 #define CONFIG_SERVICE_MQTT         (1 << 1)
+#define CONFIG_SERVICE_CLOUD        (1 << 2)
 #define CONFIG_SERVICE_SNTP         (1 << 3)
 #define CONFIG_MQTT_PROTOCOL        (7 << 4) // Maybe leave a bit of space after for additional protocols
 #define CONFIG_MQTT_ALLOW_ANY_CERT  (1 << 7)
@@ -197,6 +216,10 @@ inline bool config_emoncms_enabled() {
 
 inline bool config_mqtt_enabled() {
   return CONFIG_SERVICE_MQTT == (flags & CONFIG_SERVICE_MQTT);
+}
+
+inline bool config_cloud_enabled() {
+  return CONFIG_SERVICE_CLOUD == (flags & CONFIG_SERVICE_CLOUD);
 }
 
 inline bool config_sntp_enabled() {

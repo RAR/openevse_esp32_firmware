@@ -27,6 +27,7 @@ relative to the configured base topic (see [mqtt.md](../mqtt.md)).
 | Energy time-series logging | `energy_logger.*` | `/history` | — | `/logs`, energy endpoints | — | [history.md](../user/history.md) |
 | Event log | `event_log.*` | `/history` | — | `/logs` | — | [history.md](../user/history.md) |
 | MQTT integration (incl. Home Assistant) | `mqtt.*` | `/settings/mqtt` | `mqtt_*` | `/config`, `/status` | everything | [integrations.md](../user/integrations.md) |
+| Cloud client (consolidated telemetry + commands over a second MQTT connection) | `cloud_client.*`, `cloud_topics.*` | — | `cloud_*` (`cloud_enabled`, `cloud_server`, `cloud_port`, `cloud_thing`, `cloud_certificate_id`, `cloud_agent_interval`) | `/config`, `/status` (`cloud_connected`, `local_mqtt_disabled_reason`) | own connection: `agent/status`, `agent/control`, `agent/presence`, `agent/session`, `agent/cmd`, `agent/ack`, `lease/set` | [cloud.md](../user/cloud.md) |
 | EmonCMS logging | `emoncms.*` | `/settings/emoncms` | `emoncms_*` | `/config`, `/status` | — | [integrations.md](../user/integrations.md) |
 | OCPP 1.6 | `ocpp.*` | `/settings/ocpp` | `ocpp_*` | `/config` | — | [ocpp.md](../user/ocpp.md) |
 | RFID authentication | `rfid.*` | `/settings/rfid` | `rfid_enabled`, `rfid_storage` | `/config`, RFID endpoints | `rfid/…` | [rfid.md](../user/rfid.md) |

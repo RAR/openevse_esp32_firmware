@@ -20,6 +20,7 @@
 #include "divert.h"
 #include "net_manager.h"
 #include "mqtt.h"
+#include "cloud_client.h"
 #include "ocpp.h"
 #include "tesla_client.h"
 #include "emoncms.h"
@@ -113,6 +114,18 @@ String mqtt_vehicle_charge_limit;
 String mqtt_home_battery_soc;
 String mqtt_home_battery_power;
 String mqtt_announce_topic;
+String mqtt_client_id;
+
+#ifdef ENABLE_CLOUD_CLIENT
+// Overwatt cloud client settings. Gated with the client itself: the 4MB
+// openevse_wifi_v1 image has under 3 KB of app partition to spare, and
+// six dead options would take about 1.2 KB of it.
+String cloud_server;
+uint32_t cloud_port;
+String cloud_thing;
+String cloud_certificate_id;
+uint32_t cloud_agent_interval;
+#endif
 
 // OCPP 1.6 Settings
 String ocpp_server;
@@ -287,6 +300,16 @@ ConfigOpt *opts[] =
   new ConfigOptDefinition<String>(mqtt_home_battery_soc, "", "mqtt_home_battery_soc", "mhs"),
   new ConfigOptDefinition<String>(mqtt_home_battery_power, "", "mqtt_home_battery_power", "mhp"),
   new ConfigOptDefinition<String>(mqtt_announce_topic, "openevse/announce/" + ESPAL.getShortId(), "mqtt_announce_topic", "ma"),
+  new ConfigOptDefinition<String>(mqtt_client_id, esp_hostname, "mqtt_client_id", "mcid"),
+
+#ifdef ENABLE_CLOUD_CLIENT
+// Overwatt cloud client settings
+  new ConfigOptDefinition<String>(cloud_server, "", "cloud_server", "cs"),
+  new ConfigOptDefinition<uint32_t>(cloud_port, 8883, "cloud_port", "cpt"),
+  new ConfigOptDefinition<String>(cloud_thing, "", "cloud_thing", "cth"),
+  new ConfigOptDefinition<String>(cloud_certificate_id, "", "cloud_certificate_id", "cci"),
+  new ConfigOptDefinition<uint32_t>(cloud_agent_interval, 60, "cloud_agent_interval", "cai"),
+#endif
 
 // OCPP 1.6 Settings
   new ConfigOptDefinition<String>(ocpp_server, "", "ocpp_server", "ows"),
@@ -359,6 +382,9 @@ ConfigOpt *opts[] =
 // Virtual Options
   new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_SERVICE_EMONCMS, CONFIG_SERVICE_EMONCMS, "emoncms_enabled", "ee"),
   new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_SERVICE_MQTT, CONFIG_SERVICE_MQTT, "mqtt_enabled", "me"),
+#ifdef ENABLE_CLOUD_CLIENT
+  new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_SERVICE_CLOUD, CONFIG_SERVICE_CLOUD, "cloud_enabled", "ce"),
+#endif
   new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_MQTT_ALLOW_ANY_CERT, 0, "mqtt_reject_unauthorized", "mru"),
   new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_MQTT_RETAINED, CONFIG_MQTT_RETAINED, "mqtt_retained", "mrt"),
   new ConfigOptVirtualMaskedBool(flagsOpt, flagsChanged, CONFIG_MQTT_NO_SYS_QUERY, 0, "mqtt_sys_query", "msq"),
@@ -512,6 +538,11 @@ void config_changed(String name)
     timeManager.setSntpEnabled(config_sntp_enabled());
     OcppTask::notifyConfigChanged();
     evse.setSleepForDisable(!config_pause_uses_disabled());
+    // cloud_enabled lives in the flags word too, and flipping it
+    // re-decides which of the two MQTT connections may run.
+    cloudClient.notifyConfigChanged();
+  } else if(name.startsWith("cloud_")) {
+    cloudClient.notifyConfigChanged();
   } else if(name.startsWith("mqtt_")) {
     mqtt.restartConnection();
   } else if(name.startsWith("ocpp_")) {
