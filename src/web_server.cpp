@@ -638,6 +638,9 @@ void buildStatus(DynamicJsonDocument &doc) {
   doc["cloud_connected"] = (int)cloudClient.isConnected();
   doc["cloud_thing"]     = cloudClient.getThing();
   doc["local_mqtt_disabled_reason"] = cloudClient.localStopReason();
+  if(cloudClient.getDropped() > 0) {
+    doc["cloud_dropped"] = cloudClient.getDropped();
+  }
 
 #if defined(ENABLE_PN532) || defined(ENABLE_RFID)
   doc["rfid_failure"] = (int) rfid.communicationFails();

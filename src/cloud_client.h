@@ -87,7 +87,6 @@ class CloudClient : public MicroTasks::Task, public EvseCloudAgentHost
     // Identity and routing
     char _thing[CLOUD_THING_LEN];
     char _topic[CLOUD_TOPIC_BUF];      // scratch, publish() only
-    bool _identityValid;
 
     // Connection state
     bool _connecting;
@@ -111,11 +110,6 @@ class CloudClient : public MicroTasks::Task, public EvseCloudAgentHost
     uint32_t _scheduleVersion;
     uint32_t _configVersion;
 
-    // Watched for the status document
-    uint8_t _lastEvseState;
-    bool    _lastVehicle;
-    uint32_t _lastFlags;
-
     MicroTasks::EventListener _stateChangeListener;
 
     // Borrowed-string storage: everything handed to the core must
@@ -127,8 +121,6 @@ class CloudClient : public MicroTasks::Task, public EvseCloudAgentHost
     // Heap rule outcome, surfaced on GET /status and in the status flags
     bool    _localRun;
     uint8_t _localStopReason;
-
-    bool _restartPending;
 
     // millis() wraps every 49 days; monotonicMs() must not.
     uint64_t _monotonicHigh;
@@ -169,6 +161,11 @@ class CloudClient : public MicroTasks::Task, public EvseCloudAgentHost
     // "", "not_configured", "one_connection" or "low_heap"
     const char *localStopReason();
 
+    // Inbound payloads dropped for being too large or arriving faster
+    // than they were drained. A command dropped here is never
+    // acknowledged, so this is the only visible trace of one.
+    uint32_t getDropped() { return _queueDropped; }
+
     // ---- EvseCloudAgentHost ----
     bool publish(const char *topic_suffix, const char *payload, bool retain) override;
     uint64_t monotonicMs() override;
@@ -208,6 +205,7 @@ class CloudClient
     // Nothing gates the local publisher when there is no cloud client.
     bool localPublisherAllowed() { return true; }
     const char *localStopReason() { return ""; }
+    uint32_t getDropped() { return 0; }
 };
 
 extern CloudClient cloudClient;

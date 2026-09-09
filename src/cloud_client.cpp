@@ -55,7 +55,6 @@ CloudClient::CloudClient(EvseManager &evseManager) :
   MicroTasks::Task(),
   _core(*this),
   _evse(&evseManager),
-  _identityValid(false),
   _connecting(false),
   _nextReconnectAttempt(0),
   _connectStartTime(0),
@@ -68,13 +67,9 @@ CloudClient::CloudClient(EvseManager &evseManager) :
   _limitVersion(0),
   _scheduleVersion(0),
   _configVersion(0),
-  _lastEvseState(0),
-  _lastVehicle(false),
-  _lastFlags(0),
   _stateChangeListener(this),
   _localRun(true),
   _localStopReason(EvseCloudAgentLocalStop_None),
-  _restartPending(false),
   _monotonicHigh(0),
   _monotonicLast(0)
 {
@@ -248,8 +243,7 @@ void CloudClient::attemptConnection()
     return;
   }
 
-  _identityValid = identityFromConfig();
-  if(!_identityValid) {
+  if(!identityFromConfig()) {
     // Connecting with a client id that is not the thing name is
     // refused by the IoT policy, so do not even try.
     DBUGLN("Cloud client has no valid thing name, not connecting");
@@ -835,7 +829,6 @@ EvseCloudAgentResult CloudClient::restart()
   // SCHEDULE the reboot and return: the core publishes the ack after
   // this returns, so rebooting inline would lose it. restart_system()
   // arms a one-second alarm, which is the window the ack goes out in.
-  _restartPending = true;
   restart_system();
   return EvseCloudAgentResult_Ok;
 }

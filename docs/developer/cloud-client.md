@@ -168,8 +168,8 @@ everything else identical.
 
 | `openevse_wifi_tft_v1` | Baseline | With the client | Delta |
 | --- | --- | --- | --- |
-| Flash | 2,600,095 | 2,617,295 | +17,200 |
-| Static RAM | 88,444 | 91,292 | +2,848 |
+| Flash | 2,600,095 | 2,617,299 | +17,204 |
+| Static RAM | 88,444 | 91,284 | +2,840 |
 
 The RAM figure is mostly the 1,536-byte inbound queue plus the core's own
 `.bss`. Both are comfortably inside the 16MB budget.
