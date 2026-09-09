@@ -191,6 +191,10 @@ extern CloudClient cloudClient;
 
 #else // !ENABLE_CLOUD_CLIENT
 
+// The stub pulls in no firmware headers, so it has to declare its own
+// fixed-width types - the real path gets them from Arduino.h.
+#include <stdint.h>
+
 // A stub with the same surface, so the call sites in mqtt.cpp,
 // app_config.cpp and web_server.cpp stay free of #ifdef. Every method
 // is an inline constant, so the whole thing compiles away.
