@@ -6,6 +6,9 @@
 #include "debug.h"
 #include <LittleFS.h>
 #include <time.h>
+#include "sd_card.h"
+#include "sdlog_store.h"
+
 
 TsdbEnergyLogger tsdbEnergyLogger;
 
@@ -31,7 +34,7 @@ bool TsdbEnergyLogger::init_db() {
     cfg.max_records = TSDB_CALC_MAX_RECORDS(budget, TSDB_NUM_COLS);
   }
   cfg.index_stride = 380;
-#if defined(CONFIG_IDF_TARGET_ESP32P4)        // P4 has PSRAM
+#if defined(CONFIG_IDF_TARGET_ESP32P4) || defined(BOARD_HAS_PSRAM)   // P4, S3 LCD board
   cfg.alloc_strategy      = TSDB_ALLOC_PSRAM;
   cfg.buffer_pool_size    = 16 * 1024;
   cfg.use_paged_allocation= true;
@@ -252,11 +255,12 @@ void TsdbEnergyLogger::rollup_yesterday() {
 }
 
 unsigned long TsdbEnergyLogger::loop(MicroTasks::WakeReason) {
-  // Throttle to the idle cadence whenever we are not actively charging.
-  unsigned long next_ms = TSDB_ENERGY_SAMPLE_MS;
+  // Cadence depends on what we are writing to (card vs flash) and whether a
+  // session is running; see tsdb_sample_interval_ms().
+  unsigned long next_ms = tsdb_sample_interval_ms(true, false);
   if (_ready && _evse) {
     bool charging = _evse->isCharging();
-    if (!charging) next_ms = TSDB_ENERGY_IDLE_SAMPLE_MS;
+    next_ms = tsdb_sample_interval_ms(charging, sdlog_store_ready());
 
     // Advance the energy baseline every wake (even when we skip the write below),
     // so deltas stay honest once logging resumes. A session reset to 0 on vehicle
@@ -307,8 +311,32 @@ unsigned long TsdbEnergyLogger::loop(MicroTasks::WakeReason) {
 
       int16_t row[TSDB_NUM_COLS];
       tsdb_scale_sample(s, row);
-      esp_err_t e = tsdb_write((uint32_t)now, row);
-      if (e != ESP_OK) DBUGF("tsdb_write failed: %d", e);
+
+      // Prefer the card when one is fitted and healthy; fall back to internal
+      // flash otherwise. Not both -- writing each sample twice would double the
+      // wear for no benefit, since only one store answers queries at a time.
+      //
+      // The card branch compiles away entirely without ENABLE_SD_CARD, leaving
+      // the original tsdb_write() call and identical behaviour on the shipped
+      // boards.
+      bool logged = false;
+#ifdef ENABLE_SD_CARD
+      // sd_card_loop() owns the card and the ring: it opens the ring once a
+      // card is mounted and closes it before an unmount, so "ready" here means
+      // a live file on a live mount.
+      if (sdlog_store_ready()) {
+        logged = sdlog_store_append((uint32_t)now, row);
+        if (!logged) {
+          // append() has already marked itself not-ready, so this falls through
+          // to flash now and stays there rather than retrying a broken card.
+          DBUGLN("card append failed, using internal flash for this sample");
+        }
+      }
+#endif
+      if (!logged) {
+        esp_err_t e = tsdb_write((uint32_t)now, row);
+        if (e != ESP_OK) DBUGF("tsdb_write failed: %d", e);
+      }
     }
   }
   return next_ms;

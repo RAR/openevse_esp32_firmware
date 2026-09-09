@@ -51,15 +51,48 @@ static bool bl_ready = false;
 static const uint16_t SCREEN_W = TFT_HEIGHT; // 480
 static const uint16_t SCREEN_H = TFT_WIDTH;  // 320
 
-// ONE partial buffer in INTERNAL DRAM — this board has no PSRAM. A single
-// buffer is correct: no DMA means flush_cb blocks the CPU, so a second buffer
-// could never overlap a flush.
+// ONE partial buffer in INTERNAL DRAM.
 //
-// 16 lines rather than 32. At 32 this took a 30KB contiguous block at boot out
-// of a heap with only ~60KB free; instrumentation on hardware showed the
+// 16 lines on the stock board: at 32 this took a 30KB contiguous block at boot
+// out of a heap with only ~60KB free; instrumentation on hardware showed the
 // largest allocatable block down at 11KB while total free sat flat at ~60KB.
-// Halving costs twice as many flush calls for the same total pixels — small
-// next to the blocking SPI write itself — and returns 15KB of contiguous DRAM.
+// Halving costs twice as many flush calls for the same total pixels -- small
+// next to the blocking SPI write itself -- and returns 15KB of contiguous DRAM.
+// openevse_s3_lcd overrides DRAW_BUF_LINES=32 from its env (its internal heap is
+// not under the same pressure because the network stack lives in PSRAM).
+//
+// Single-buffered because of the TFT_eSPI boundary noted above, not because of
+// anything about the ILI9488 or the S3: SPI_18BIT_DRIVER compiles the library's
+// whole DMA subsystem out (Processors/TFT_eSPI_ESP32.h -- ESP32_DMA is only defined
+// `#if !defined(TFT_PARALLEL_8_BIT) && !defined(SPI_18BIT_DRIVER)`), and
+// pushPixelsDMA() is hardwired to `trans.length = len * 16` regardless, while this
+// panel's path writes 3 bytes/pixel. DMA here would clock garbage into the panel.
+// So flush_cb blocks the CPU, and a second buffer could never overlap a flush.
+//
+// Internal DRAM, and on PSRAM boards (openevse_s3_lcd) that is enforced rather than
+// assumed -- see the note at the heap_caps_malloc() call. PSRAM is not idle on those
+// boards; mbedTLS and the LVGL object pool are routed there. What it must not hold is
+// this buffer, which the CPU reads. docs/hardware/esp32-s3-lcd.md has the detail.
+//
+// This also fixes the wire format: 18 bpp, with a CPU-side RGB565->RGB666 conversion
+// on every pixel. If the display link ever becomes the bottleneck, the fix is to port
+// this layer to esp_lcd (esp_lcd_ili9488 does the conversion AND DMA), not to patch
+// TFT_eSPI -- dmaHAL is private and initDMA() is compiled out, so it cannot be done
+// from the app side.
+//
+// !! THIS FILE IS SHARED WITH SHIPPED HARDWARE. !!
+// openevse_wifi_tft_v1 and openevse_s3_lcd both pull in lvgl_tft_renderer_flags;
+// there is no separate S3 panel layer. The constraint above is identical on both
+// (SPI_18BIT_DRIVER follows ILI9488_DRIVER, not the chip), so a DMA rework would pay
+// off on the stock board too -- but it must be conditioned on the board and proven on
+// the S3 first: the stock board has no PSRAM to stage a second buffer in, only ~320 KB
+// of internal heap already shared with WiFi and TLS, and it is in the field.
+// Treat a clock bump separately from the DMA rework. 80 MHz is available on the stock
+// board in principle (its TFT pins are the ESP32-classic HSPI IO_MUX set, so it also
+// bypasses the GPIO matrix), but that board is the QD354801 direct-solder part while
+// the S3 is an ER-TFT035-6 on FPC through a ZIF -- different trace lengths, different
+// flex path. A clean 80 MHz result on one is not evidence for the other, and on
+// shipped units there is no series termination to add and nothing to recall.
 #ifndef DRAW_BUF_LINES
 #define DRAW_BUF_LINES 16
 #endif
@@ -440,6 +473,13 @@ static bool lvgl_panel_prepare_begin(size_t buf_bytes)
 
   lv_init();
 
+  // MALLOC_CAP_INTERNAL is required, not a hint. On PSRAM boards a plain malloc()
+  // of ~30 KB is over the SDK's 4096-byte ALWAYSINTERNAL threshold and would be
+  // served from PSRAM -- which is exactly where the CPU-bound 3-byte-per-pixel
+  // flush must not read from. The failure branch is a real boot-time mode, not a
+  // formality: the SDK reserves no internal pool (SPIRAM_MALLOC_RESERVE_INTERNAL
+  // is 0), so this competes with everything else on a fragmented heap. Keep the
+  // largest-free-block report with it.
   buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if(buf1 == nullptr) {
     Serial.printf("[panel] FATAL: draw-buffer alloc failed (%u B internal); largest free block=%u\n",
