@@ -159,6 +159,32 @@ size_t cloud_topic_for_suffix(char *buf, size_t len, const char *thing,
   return 0;
 }
 
+size_t cloud_publish_route(char *buf, size_t len, const char *thing,
+                           const char *suffix, bool retain_requested,
+                           bool in_connect, bool *retain_out)
+{
+  if(NULL != retain_out) {
+    *retain_out = false;
+  }
+
+  // Only the status document has a connect-time route. onConnected() also
+  // publishes presence, control and possibly a held session record, and
+  // none of those change route because of where they were published from.
+  bool connect_status = in_connect && NULL != suffix &&
+                        0 == strcmp(suffix, SUFFIX_STATUS);
+
+  size_t length = cloud_topic_for_suffix(buf, len, thing, suffix, connect_status);
+  if(0 == length) {
+    return 0;
+  }
+
+  if(NULL != retain_out) {
+    *retain_out = retain_requested && '$' != buf[0];
+  }
+
+  return length;
+}
+
 size_t cloud_topic_cmd(char *buf, size_t len, const char *thing)
 {
   return cloud_topic_for_suffix(buf, len, thing, SUFFIX_CMD, false);

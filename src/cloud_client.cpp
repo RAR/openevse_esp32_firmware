@@ -539,21 +539,19 @@ bool CloudClient::publish(const char *topic_suffix, const char *payload, bool re
     return false;
   }
 
-  bool connect_status = _connectStatusPublish &&
-                        0 == strcmp(topic_suffix, EVSE_CLOUD_AGENT_TOPIC_STATUS);
-
-  size_t length = cloud_topic_for_suffix(_topic, sizeof(_topic), _thing,
-                                         topic_suffix, connect_status);
+  // The whole routing decision, including which retain flag survives,
+  // lives in cloud_topics so the host tests can drive the real core
+  // through the real mapping.
+  bool retain_flag = false;
+  size_t length = cloud_publish_route(_topic, sizeof(_topic), _thing,
+                                      topic_suffix, retain,
+                                      _connectStatusPublish, &retain_flag);
   if(0 == length) {
     // Not in the policy's allow-list. Publishing it anyway would not
     // fail the message, it would close the connection.
     DBUGF("Refusing to publish unroutable suffix '%s'", topic_suffix);
     return false;
   }
-
-  // Basic Ingest never reaches the broker, so it cannot retain
-  // anything; the core's retain flag is advisory there.
-  bool retain_flag = retain && ('$' != _topic[0]);
 
   return _client.publish(_topic, payload, retain_flag, MG_MQTT_QOS(1));
 }

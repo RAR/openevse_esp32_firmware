@@ -18,8 +18,9 @@ inherits `EvseCloudAgentHost` and owns:
 - an `EvseCloudAgentHeapRule`
 
 `src/cloud_topics.{h,cpp}` is the topic routing, deliberately kept free of every
-firmware header so the whole allow-list is exercised by
-`test/test_cloud_topics/` on the host. It is the highest-risk part of the
+firmware header so it can be exercised on the host. `CloudClient::publish()` is
+a thin wrapper over `cloud_publish_route()`, which decides the topic *and* which
+retain flag survives, so the tests drive the same code the device does. It is the highest-risk part of the
 integration, because the broker answers an unauthorised publish by closing the
 connection rather than rejecting the message: a topic wrong by one segment looks
 exactly like a network fault.
@@ -44,6 +45,17 @@ straight back on the stack the deferral exists to get off. The task polls at one
 second instead, which is also the core's own debounce, so nothing is lost.
 `onDisconnected()` is the one core call made from a callback, because it only
 clears a flag and publishes nothing.
+
+Two host suites cover it. `test/test_cloud_topics/` asserts the mapping in
+isolation, character for character. `test/test_cloud_publish_route/` wires the
+**real** `EvseCloudAgentCore` to a fake transport that routes exactly as
+`CloudClient::publish()` does, and asserts the behaviour that reading the
+mapping cannot settle: `onConnected()` puts exactly one retained status document
+on `d/<thing>/agent/status`, every later status goes to Basic Ingest unretained
+and never touches the retained topic again, a held session record replayed at
+connect still takes Basic Ingest, and nothing the core publishes across a whole
+connect/charge/command/heartbeat cycle lands outside the two grants. That is
+bench item four, answered without hardware.
 
 ## Change detection
 
@@ -168,7 +180,7 @@ everything else identical.
 
 | `openevse_wifi_tft_v1` | Baseline | With the client | Delta |
 | --- | --- | --- | --- |
-| Flash | 2,600,095 | 2,617,299 | +17,204 |
+| Flash | 2,600,095 | 2,617,383 | +17,288 |
 | Static RAM | 88,444 | 91,284 | +2,840 |
 
 The RAM figure is mostly the 1,536-byte inbound queue plus the core's own
@@ -197,7 +209,9 @@ The 620-byte difference is `mqtt_client_id` and the routing helper. Gating the
    the soak supplies them. `one_connection` does not depend on them.
 3. Verify the last will flips presence on a power cut.
 4. Verify exactly one retained status document per connect, and that later
-   status publishes do not appear on the retained topic.
+   status publishes do not appear on the retained topic. Covered on the host by
+   `test/test_cloud_publish_route/`; the bench check is now only that the
+   broker agrees.
 5. Verify both Basic Ingest topics are authorised, spelled exactly. Watch for a
    reconnect loop that starts on the first heartbeat rather than at connect —
    that is the signature of an unauthorised publish.

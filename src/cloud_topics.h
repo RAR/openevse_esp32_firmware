@@ -69,6 +69,25 @@ bool cloud_thing_from_mac(char *buf, size_t len, const char *mac);
 size_t cloud_topic_for_suffix(char *buf, size_t len, const char *thing,
                               const char *suffix, bool connect_status);
 
+// Resolve one publish from the agent core into the topic and the retain
+// flag that actually go on the wire.
+//
+// in_connect is the host's one-shot "we are inside onConnected()" flag.
+// It selects the retained device-root route, and it applies to
+// "agent/status" ONLY - the session record onConnected() may replay takes
+// the same Basic Ingest route as any other, so the suffix test lives here
+// rather than at each call site.
+//
+// retain_out is set to what the broker should be asked for: Basic Ingest
+// never reaches the broker and cannot retain anything, so the core's
+// retain flag is dropped there however it was set.
+//
+// Returns the topic length, or 0 - buf empty, *retain_out false - when
+// the publish must not happen at all.
+size_t cloud_publish_route(char *buf, size_t len, const char *thing,
+                           const char *suffix, bool retain_requested,
+                           bool in_connect, bool *retain_out);
+
 // The two topics subscribed at connect, by the same rules. Convenience
 // wrappers over cloud_topic_for_suffix() so callers cannot misspell a
 // suffix that only fails at runtime.
