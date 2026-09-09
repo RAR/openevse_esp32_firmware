@@ -525,8 +525,24 @@ void EvseManager::releaseAutoReleaseClaims()
     if(_clients[i].isValid() && _clients[i].isAutoRelease())
     {
       DBUGF("Release claim from 0x%08x, priority %d, %s", _clients[i].getClient(), _clients[i].getPriority(), _clients[i].getState().toString());
+
+      EvseClient client = _clients[i].getClient();
       _clients[i].release();
       _evaluateClaims = true;
+
+      // An auto-release drops the claim on the charger's own initiative
+      // at the end of a session, and used to do it silently: it bypasses
+      // release(), so neither version moved and nothing was told. Every
+      // consumer that watches these versions - the MQTT publisher, the
+      // web UI and the cloud client's control document - then kept
+      // showing an override that no longer existed.
+      StaticJsonDocument<128> event;
+      event["claims_version"] = ++_version;
+      if(EvseClient_OpenEVSE_Manual == client) {
+        event["manual_override"] = 0;
+        event["override_version"] = manual.setVersion(manual.getVersion() + 1);
+      }
+      event_send(event);
     }
   }
 }
