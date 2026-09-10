@@ -2185,6 +2185,19 @@ void web_server_setup()
       request->send(response);
       return;
     }
+    // ?ms=N retunes the checkpoint sweep interval on a running unit. Reflashing
+    // this board costs a charging window, and the right interval is a trade
+    // against how much loop time an integrity walk eats -- which the live
+    // timings in this same response are what tell you.
+    String ms = request->getParam("ms");
+    if(ms.length() > 0) {
+      heap_trap_set_sweep_ms((uint32_t)ms.toInt());
+    }
+    String mask = request->getParam("mask");
+    if(mask.length() > 0) {
+      heap_trap_set_mask((uint32_t)strtoul(mask.c_str(), NULL, 0));
+    }
+
     DynamicJsonDocument doc(3072);
     heap_trap_json(doc);
     response->setCode(200);

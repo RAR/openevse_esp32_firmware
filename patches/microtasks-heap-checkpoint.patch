@@ -1,0 +1,27 @@
+--- /tmp/claude-1000/-home-rar-oevse-openevse-esp32-firmware/114e4db8-161f-433c-85d7-283e84f7ad8f/scratchpad/wt-live-trap/.pio/libdeps/openevse_wifi_tft_v1/MicroTasks/src/MicroTasks.cpp.orig	2026-09-10 19:40:50.904047184 -0400
++++ /tmp/claude-1000/-home-rar-oevse-openevse-esp32-firmware/114e4db8-161f-433c-85d7-283e84f7ad8f/scratchpad/wt-live-trap/.pio/libdeps/openevse_wifi_tft_v1/MicroTasks/src/MicroTasks.cpp	2026-09-10 19:40:50.921312298 -0400
+@@ -105,6 +105,11 @@
+   return uiNextEvent;
+ }
+ 
++// Heap-corruption trap hook (diagnostic builds only). Weak: where the firmware
++// does not define it the symbol is null and the call below is skipped, so this
++// library needs no build flag of its own.
++extern "C" void heap_trap_task_checkpoint(const void *task) __attribute__((weak));
++
+ void MicroTasksClass::wakeTask(Task *oTask, WakeReason eReason)
+ {
+   DBUG(millis());
+@@ -118,6 +123,12 @@
+   uint32_t ulStart = micros();
+ #endif
+   uint32_t ulDelay = oTask->loop(eReason);
++
++  // Checkpoint the heap against this specific task, so a trip names the task
++  // that was running rather than only "somewhere inside MicroTask.update()".
++  if(heap_trap_task_checkpoint) {
++    heap_trap_task_checkpoint(oTask);
++  }
+   DBUG(micros() - ulStart);
+   DBUG(":");
+   uint32_t ulNext = ulDelay & ~MicroTask.WaitForMask;

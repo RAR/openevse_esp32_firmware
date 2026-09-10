@@ -25,7 +25,7 @@
 // 2026-09-09, when adding total_blocks/located shifted everything after
 // blocks_seen and a stale record came back with bad.addr 0x00000101.
 // BUMP THIS whenever HeapTrapRecord or BlockRec changes.
-#define TRAP_MAGIC   0x48545202u   // "HTR" + layout rev 2
+#define TRAP_MAGIC   0x48545203u   // "HTR" + layout rev 3
 
 // sizeof(poison_head_t) and sizeof(poison_head_t) + sizeof(poison_tail_t)
 #define POISON_HEAD      8u
@@ -51,6 +51,24 @@ struct HeapTrapRecord {
   BlockRec bad;
   BlockRec next;
   uint32_t prev_tail[8];
+
+  // Which code was running. last_good is the most recent checkpoint that saw a
+  // clean heap; fail is the checkpoint that did not. The corrupter ran between
+  // them. iters_between counts loop() iterations across that span: 0 means both
+  // checkpoints were in the same iteration, which is the precise case. Anything
+  // larger means the span covers uninstrumented iterations, so the stage pair
+  // brackets the write only loosely -- shorten the sweep interval and wait for
+  // the next trip.
+  uint8_t  last_good_stage;
+  uint32_t last_good_ctx;      // task object, when last_good_stage is TASK
+  uint32_t last_good_vtable;
+  uint8_t  fail_stage;
+  uint32_t fail_ctx;
+  uint32_t fail_vtable;
+  uint32_t iters_between;
+  uint32_t sweep_us_last;
+  uint32_t sweep_us_max;
+  uint32_t sweeps;
 };
 
 static RTC_NOINIT_ATTR HeapTrapRecord rec;
@@ -145,6 +163,128 @@ void heap_trap_capture()
   rec.magic = TRAP_MAGIC;
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoints
+//
+// Running state lives in plain statics, not in the RTC record: heap_trap_capture()
+// memsets the record, so the stage that was last clean has to survive somewhere
+// else and be copied in afterwards.
+// ---------------------------------------------------------------------------
+
+// Coverage, not frequency, is what decides whether a trip tells us anything.
+// A checkpoint only localises the write if the write happened between two
+// checkpoints of the SAME pass, so the useful fraction of trips is roughly the
+// fraction of wall-clock time spent inside an instrumented pass. Sweeping every
+// 200 ms with ~6 ms of walking per pass covers 3% of the time - at an 8 h to
+// 2 d MTBF that is years of waiting for one informative trip.
+//
+// So the default is to check on EVERY iteration (sweep_ms 0) and to cut the
+// cost by checking only a few coarse stages instead of all of them. Coverage
+// goes to ~100%, resolution drops to "one of four segments", and the mask can
+// be widened to subdivide the guilty segment once it is known - including the
+// per-task layer, which is off until it is worth its cost.
+#define CP_BIT(stage) (1u << (stage))
+#define CP_MASK_DEFAULT (CP_BIT(HEAP_TRAP_LOOP_TOP) | CP_BIT(HEAP_TRAP_MONGOOSE) | \
+                         CP_BIT(HEAP_TRAP_WEB_SERVER) | CP_BIT(HEAP_TRAP_RAPI) | \
+                         CP_BIT(HEAP_TRAP_MICROTASK))
+
+static bool     cp_armed = false;
+static uint32_t cp_sweep_ms = 0;       // 0 = every iteration
+static uint32_t cp_mask = CP_MASK_DEFAULT;
+static uint32_t cp_last_sweep = 0;
+static uint32_t cp_iters = 0;
+
+static uint8_t  cp_good_stage = HEAP_TRAP_NONE;
+static uint32_t cp_good_ctx = 0;
+static uint32_t cp_good_vtable = 0;
+static uint32_t cp_good_iter = 0;
+
+static uint32_t cp_sweeps = 0;
+static uint32_t cp_us_last = 0;
+static uint32_t cp_us_max = 0;
+
+void heap_trap_set_sweep_ms(uint32_t ms)
+{
+  cp_sweep_ms = ms;
+}
+
+void heap_trap_set_mask(uint32_t mask)
+{
+  // A zero mask disables the checkpoint layer and leaves the 10 s backstop.
+  cp_mask = mask;
+}
+
+void heap_trap_loop_begin()
+{
+  cp_iters++;
+  if(0 == cp_sweep_ms) {
+    cp_armed = true;    // every iteration: full coverage
+    return;
+  }
+  // Arm for a whole iteration at a time, so every stage of one pass is checked
+  // and the pair of stages either side of a failure is meaningful.
+  cp_armed = (millis() - cp_last_sweep) >= cp_sweep_ms;
+  if(cp_armed) {
+    cp_last_sweep = millis();
+  }
+}
+
+static void cp_check(uint8_t stage, uint32_t ctx, uint32_t vtable)
+{
+  if(!cp_armed || 0 == (cp_mask & CP_BIT(stage))) {
+    return;
+  }
+
+  uint32_t t0 = micros();
+  bool ok = heap_caps_check_integrity_all(false);
+  uint32_t dt = micros() - t0;
+
+  cp_sweeps++;
+  cp_us_last = dt;
+  if(dt > cp_us_max) {
+    cp_us_max = dt;
+  }
+
+  if(ok) {
+    cp_good_stage = stage;
+    cp_good_ctx = ctx;
+    cp_good_vtable = vtable;
+    cp_good_iter = cp_iters;
+    return;
+  }
+
+  heap_trap_capture();
+  rec.last_good_stage = cp_good_stage;
+  rec.last_good_ctx = cp_good_ctx;
+  rec.last_good_vtable = cp_good_vtable;
+  rec.fail_stage = stage;
+  rec.fail_ctx = ctx;
+  rec.fail_vtable = vtable;
+  rec.iters_between = cp_iters - cp_good_iter;
+  rec.sweep_us_last = cp_us_last;
+  rec.sweep_us_max = cp_us_max;
+  rec.sweeps = cp_sweeps;
+
+  heap_caps_check_integrity_all(true);   // UART, for anyone listening
+  abort();
+}
+
+void heap_trap_checkpoint(uint8_t stage)
+{
+  cp_check(stage, 0, 0);
+}
+
+extern "C" void heap_trap_task_checkpoint(const void *task)
+{
+  // The vtable pointer is the first word of a polymorphic object; resolved
+  // against the ELF it names the class, which is what we actually want to know.
+  uint32_t vtable = 0;
+  if(task) {
+    memcpy(&vtable, task, sizeof(vtable));
+  }
+  cp_check(HEAP_TRAP_TASK, (uint32_t)(uintptr_t)task, vtable);
+}
+
 void heap_trap_tick()
 {
   static uint32_t last = 0;
@@ -152,12 +292,33 @@ void heap_trap_tick()
   last = millis();
   if(heap_caps_check_integrity_all(false)) return;
   heap_trap_capture();
+  // The backstop catches corruption from outside loop() (tiT, the wifi task)
+  // and from uninstrumented iterations, so there is no meaningful failing
+  // stage - only the last stage that was known clean.
+  rec.last_good_stage = cp_good_stage;
+  rec.last_good_ctx = cp_good_ctx;
+  rec.last_good_vtable = cp_good_vtable;
+  rec.fail_stage = HEAP_TRAP_NONE;
+  rec.iters_between = cp_iters - cp_good_iter;
+  rec.sweep_us_last = cp_us_last;
+  rec.sweep_us_max = cp_us_max;
+  rec.sweeps = cp_sweeps;
   heap_caps_check_integrity_all(true);   // UART, for anyone listening
   abort();
 }
 
 bool heap_trap_present() { return rec.magic == TRAP_MAGIC; }
 void heap_trap_clear() { rec.magic = 0; }
+
+static const char *stage_name(uint8_t stage)
+{
+  static const char *names[HEAP_TRAP_STAGE_MAX] = {
+    "none", "loop_top", "mongoose", "http_update", "web_server", "diagnostics",
+    "flash_migrate", "ota", "rapi", "microtask", "tesla", "emoncms", "serial",
+    "task"
+  };
+  return stage < HEAP_TRAP_STAGE_MAX ? names[stage] : "?";
+}
 
 static void block_json(JsonObject o, const BlockRec &b)
 {
@@ -175,6 +336,20 @@ static void block_json(JsonObject o, const BlockRec &b)
 void heap_trap_json(JsonDocument &doc)
 {
   doc["present"] = heap_trap_present();
+
+  // Live, so the cost of a sweep can be read off a running unit and the
+  // interval retuned (?ms=N) without a reflash.
+  JsonObject live = doc.createNestedObject("live");
+  live["sweep_ms"] = cp_sweep_ms;      // 0 = every iteration
+  char mbuf[12];
+  snprintf(mbuf, sizeof(mbuf), "0x%04x", (unsigned)cp_mask);
+  live["mask"] = mbuf;
+  live["sweeps"] = cp_sweeps;
+  live["sweep_us_last"] = cp_us_last;
+  live["sweep_us_max"] = cp_us_max;
+  live["iters"] = cp_iters;
+  live["last_good_stage"] = stage_name(cp_good_stage);
+
   if(!heap_trap_present()) return;
   char buf[12];
   doc["uptime_s"] = rec.uptime_s;
@@ -191,4 +366,26 @@ void heap_trap_json(JsonDocument &doc)
   for(int i = 0; i < 8; i++) { snprintf(buf, sizeof(buf), "%08x", (unsigned)rec.prev_tail[i]); t.add(buf); }
   block_json(doc.createNestedObject("bad"), rec.bad);
   block_json(doc.createNestedObject("next"), rec.next);
+
+  // Who was running. fail_stage "none" means the 10 s backstop fired rather
+  // than a checkpoint, so only last_good is meaningful.
+  JsonObject w = doc.createNestedObject("where");
+  w["last_good_stage"] = stage_name(rec.last_good_stage);
+  w["fail_stage"] = stage_name(rec.fail_stage);
+  w["iters_between"] = rec.iters_between;
+  if(rec.last_good_ctx) {
+    snprintf(buf, sizeof(buf), "0x%08x", (unsigned)rec.last_good_ctx);
+    w["last_good_task"] = buf;
+    snprintf(buf, sizeof(buf), "0x%08x", (unsigned)rec.last_good_vtable);
+    w["last_good_vtable"] = buf;
+  }
+  if(rec.fail_ctx) {
+    snprintf(buf, sizeof(buf), "0x%08x", (unsigned)rec.fail_ctx);
+    w["fail_task"] = buf;
+    snprintf(buf, sizeof(buf), "0x%08x", (unsigned)rec.fail_vtable);
+    w["fail_vtable"] = buf;
+  }
+  w["sweeps"] = rec.sweeps;
+  w["sweep_us_last"] = rec.sweep_us_last;
+  w["sweep_us_max"] = rec.sweep_us_max;
 }

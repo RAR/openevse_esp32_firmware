@@ -56,6 +56,11 @@
 #include "diagnostics.h"
 #ifdef HEAP_DEBUG_INTEGRITY
 #include "heap_trap.h"
+// The stage identifiers only exist when the trap is compiled in, so the
+// no-op form must never expand its argument.
+#define HEAP_TRAP_CP(stage) heap_trap_checkpoint(stage)
+#else
+#define HEAP_TRAP_CP(stage) do {} while(0)
 #endif
 #include "boost.h"
 
@@ -301,19 +306,31 @@ void loop()
 {
   Profile_Start(loop);
 
+#ifdef HEAP_DEBUG_INTEGRITY
+  heap_trap_loop_begin();
+  heap_trap_checkpoint(HEAP_TRAP_LOOP_TOP);
+#endif
+
   Profile_Start(Mongoose);
   Mongoose.poll(0);
   Profile_End(Mongoose, 10);
+  HEAP_TRAP_CP(HEAP_TRAP_MONGOOSE);
 
   // Follow HTTP OTA redirects only after Mongoose.poll() has destroyed the
   // previous TLS connection, avoiding two simultaneous TLS contexts.
   http_update_loop();
+  HEAP_TRAP_CP(HEAP_TRAP_HTTP_UPDATE);
 
   web_server_loop();
+  HEAP_TRAP_CP(HEAP_TRAP_WEB_SERVER);
   diagnostics_loop();
+  HEAP_TRAP_CP(HEAP_TRAP_DIAGNOSTICS);
   flash_migrate_loop();
+  HEAP_TRAP_CP(HEAP_TRAP_FLASH_MIGRATE);
   ota_loop();
+  HEAP_TRAP_CP(HEAP_TRAP_OTA);
   rapiSender.loop();
+  HEAP_TRAP_CP(HEAP_TRAP_RAPI);
 
 #ifdef HEAP_DEBUG_INTEGRITY
   heap_trap_tick();
@@ -322,6 +339,7 @@ void loop()
   Profile_Start(MicroTask);
   MicroTask.update();
   Profile_End(MicroTask, 10);
+  HEAP_TRAP_CP(HEAP_TRAP_MICROTASK);
 
   // NOTE: the legacy first-connect block (handleRapiRead() + import_timers())
   // was removed: both call through the sender-less global OpenEVSE object and
@@ -334,6 +352,7 @@ void loop()
   {
     if (vehicle_data_src == VEHICLE_DATA_SRC_TESLA) {
       teslaClient.loop();
+      HEAP_TRAP_CP(HEAP_TRAP_TESLA);
     }
 
     if(emoncms_updated)
@@ -344,11 +363,13 @@ void loop()
       create_rapi_json(data);
       emoncms_publish(data);
       emoncms_updated = false;
+      HEAP_TRAP_CP(HEAP_TRAP_EMONCMS);
     }
   } // end WiFi connected
 
   if(DEBUG_PORT.available()) {
     handle_serial();
+    HEAP_TRAP_CP(HEAP_TRAP_SERIAL);
   }
 
 #ifdef ENABLE_DEBUG_MEMORY_MONITOR
