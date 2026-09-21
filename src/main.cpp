@@ -34,6 +34,7 @@
 #include "emonesp.h"
 #include "app_config.h"
 #include "net_manager.h"
+#include "matter_bridge.h"
 #include "web_server.h"
 #include "flash_migrate.h"
 #include "input.h"
@@ -275,6 +276,10 @@ void setup()
   DBUGF("After shaper.begin: %d", ESPAL.getFreeHeap());
 
   tempThrottle.begin(evse);
+
+#ifdef ENABLE_MATTER
+  matterBridge.begin(evse);
+#endif
   DBUGF("After tempThrottle.begin: %d", ESPAL.getFreeHeap());
 
   lcd.display(F("OpenEVSE WiFI"), 0, 0, 0, LCD_CLEAR_LINE);
