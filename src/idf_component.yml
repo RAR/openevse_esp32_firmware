@@ -1,2 +1,5 @@
 dependencies:
   idf: '>=5.1'
+  # SPIKE: Matter on the S3 (issue #781). Same version the pioarduino
+  # 3.3.11 prebuilt libs carry, on the same IDF 5.5.5.
+  espressif/esp_matter: "1.5.0"

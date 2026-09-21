@@ -1,0 +1,9 @@
+# SPIKE: Matter overlay for the S3 hybrid build (issue #781).
+# CHIP stack + esp_matter data model allocate from PSRAM; commissioning is
+# on-network only (BT stays off per sdkconfig.defaults.s3lcd), so no CHIPoBLE.
+CONFIG_CHIP_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_ESP_MATTER_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_ENABLE_CHIPOBLE=n
+CONFIG_ENABLE_WIFI_STATION=y
+CONFIG_ENABLE_WIFI_AP=n
+CONFIG_ENABLE_CHIP_SHELL=n
