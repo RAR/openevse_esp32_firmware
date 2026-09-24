@@ -32,5 +32,53 @@ void lvgl_panel_pump();
 bool lvgl_panel_write_ppm(const char *path);
 #endif
 
+
+// --- Running LVGL on a task of its own (LVGL_TASK) --------------------------
+//
+// The ILI9488 forces TFT_eSPI's SPI_18BIT_DRIVER, which compiles the library's
+// DMA subsystem out, so pushing pixels is a blocking, CPU-driven SPI write:
+// ~121 ms for a full frame at 40 MHz on the S3, of which ~92 ms is wire time
+// that no amount of CPU cleverness avoids. Run from loopTask -- the same thread
+// that drains every web response and services MQTT -- that is a long stall.
+//
+// Moving only the PUSH to a second task does NOT fix it, and this was measured
+// rather than assumed: LVGL renders the next chunk into the second draw buffer
+// and then BUSY-WAITS for the first to come back -- the `while(draw_buf->flushing)`
+// in lv_refr.c's draw_buf_flush(). loopTask blocks for the push regardless,
+// having also paid for a task switch and lost throughput to core contention
+// (measured 32.7 ms/s against 28.1 ms/s for doing it inline).
+//
+// So lv_timer_handler() itself moves. It runs on lvgl_task, and everything else
+// that touches LVGL state takes the lock below. The task holds it for the length
+// of a render (~65 ms once a second on the charge screen); the screen updates
+// hold it for microseconds, so they collide only occasionally.
+//
+// !! EVERY LVGL CALL OUTSIDE lvgl_task MUST HOLD THIS LOCK. !! That includes the
+// screen build/update/destroy entry points and anything reading LVGL state. Use
+// LvglLock rather than the bare calls -- LcdTask::loop has many early returns.
+#ifdef LVGL_TASK
+// Returns false if there is no mutex yet -- lvgl_panel_begin() creates it, and
+// LcdTask has LVGL calls to make on either side of that. Pair with the return
+// value, never unconditionally, or an LvglLock taken before the mutex existed
+// would give a mutex it never took.
+bool lvgl_lock();
+void lvgl_unlock();
+
+// RAII. The underlying mutex is recursive, so nesting is safe.
+class LvglLock
+{
+  public:
+    LvglLock() : _held(lvgl_lock()) { }
+    ~LvglLock() { if(_held) { lvgl_unlock(); } }
+    LvglLock(const LvglLock &) = delete;
+    LvglLock &operator=(const LvglLock &) = delete;
+  private:
+    bool _held;
+};
+#else
+// LVGL runs on the caller; the guard exists so callers need no #ifdef.
+class LvglLock { };
+#endif
+
 #endif // ENABLE_SCREEN_LVGL_TFT
 #endif // __LVGL_PANEL_H

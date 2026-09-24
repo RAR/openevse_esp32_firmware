@@ -64,6 +64,7 @@ typedef spi_flash_mmap_handle_t diag_mmap_handle_t;
 
 #ifdef ENABLE_SCREEN_LVGL_TFT
 #include <lvgl.h>
+#include "lvgl_tft/lvgl_panel.h"
 #endif
 
 // Outbound websocket buffer above which a client is considered stalled and
@@ -188,6 +189,10 @@ void diagnostics_loop()
   // and boot-loops the board.
   if(lv_is_initialized())
   {
+    // lv_mem_monitor() walks the LVGL allocator's block list. With LVGL_TASK
+    // that list is being mutated by lvgl_task while this runs on loopTask, so
+    // take the same lock the screens do. Compiles away without LVGL_TASK.
+    LvglLock lvgl_guard;
     lv_mem_monitor_t lv_mon;
     lv_mem_monitor(&lv_mon);
     if(lv_mon.used_pct > diag_lv_used_max) {

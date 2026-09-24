@@ -69,11 +69,50 @@ static void lvgl_pump()
   lv_timer_handler();
   lvgl_panel_pump();
 }
+#elif defined(LVGL_TASK)
+// lvgl_task drives LVGL; LcdTask must not, or two threads would render at once.
+// Kept as a no-op so the call sites read the same either way.
+static void lvgl_pump()
+{
+}
+#else
+#ifdef LVGL_FLUSH_PROFILE
+// What the CALLER pays. The panel profiler in lvgl_panel.cpp times the SPI push
+// itself, which is a property of the panel and not of who is waiting for it;
+// this is the one that says whether loopTask got its time back. Only built on
+// the non-LVGL_TASK path, where loopTask still pumps -- with LVGL_TASK the
+// figure to watch is the LcdTask::loop timer below.
+static uint32_t pump_us_acc = 0;
+static uint32_t pump_calls  = 0;
+static uint32_t pump_report_at = 0;
+
+static void lvgl_pump()
+{
+  uint32_t t0 = micros();
+  lv_timer_handler();
+  pump_us_acc += micros() - t0;
+  pump_calls++;
+
+  uint32_t now = millis();
+  if(pump_report_at != 0 && (now - pump_report_at) >= 2000) {
+    // Serial, not DBUGF: this file undefs ENABLE_DEBUG unless ENABLE_DEBUG_LCD
+    // is set, so DBUGF would silently compile to nothing in a normal dev build.
+    Serial.printf("[lvgl] loopTask in lv_timer_handler: %lu us over %lu calls (%lu us/s)\n",
+                  (unsigned long)pump_us_acc, (unsigned long)pump_calls,
+                  (unsigned long)(pump_us_acc / 2));
+    pump_us_acc = 0;
+    pump_calls  = 0;
+  }
+  if(pump_report_at == 0 || (now - pump_report_at) >= 2000) {
+    pump_report_at = now;
+  }
+}
 #else
 static void lvgl_pump()
 {
   lv_timer_handler();
 }
+#endif
 #endif
 
 // --- Message inner class (mechanics identical to the TFT_eSPI LcdTask) ---
@@ -305,8 +344,42 @@ void LcdTask::setup()
 {
 }
 
+#ifdef LVGL_FLUSH_PROFILE
+// Total time loopTask spends inside LcdTask::loop(), which is the number this
+// whole exercise is about. Before LVGL_TASK it contained the render and the
+// blocking SPI push; after, it should contain only the data gathering plus
+// whatever wait the LVGL lock costs. RAII because loop() has a dozen returns.
+namespace {
+uint32_t lcdloop_us_acc = 0;
+uint32_t lcdloop_calls  = 0;
+uint32_t lcdloop_report_at = 0;
+struct LcdLoopTimer {
+  uint32_t t0;
+  LcdLoopTimer() : t0(micros()) { }
+  ~LcdLoopTimer() {
+    lcdloop_us_acc += micros() - t0;
+    lcdloop_calls++;
+    uint32_t now = millis();
+    if(lcdloop_report_at != 0 && (now - lcdloop_report_at) >= 2000) {
+      Serial.printf("[lvgl] loopTask in LcdTask::loop: %lu us over %lu calls (%lu us/s)\n",
+                    (unsigned long)lcdloop_us_acc, (unsigned long)lcdloop_calls,
+                    (unsigned long)(lcdloop_us_acc / 2));
+      lcdloop_us_acc = 0;
+      lcdloop_calls  = 0;
+    }
+    if(lcdloop_report_at == 0 || (now - lcdloop_report_at) >= 2000) {
+      lcdloop_report_at = now;
+    }
+  }
+};
+}
+#endif
+
 unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
 {
+#ifdef LVGL_FLUSH_PROFILE
+  LcdLoopTimer lcdloop_timer;
+#endif
   if(_initialise)
   {
     // Bring up LVGL + the panel AFTER networking (it breaks the display if done
@@ -314,6 +387,9 @@ unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
     DBUGVAR(ESP.getFreeHeap());
     _displayOk = lvgl_panel_begin();
     if(_displayOk) {
+      // lvgl_panel_begin() has started lvgl_task by now, so everything below
+      // that touches LVGL needs the lock.
+      LvglLock lock;
       applyThemeFromConfig();  // pick the palette before the first screen is built
       applyDisplayConfig();    // cache brightness/timeout before the first wake
       boot_screen_build();
@@ -332,6 +408,13 @@ unsigned long LcdTask::loop(MicroTasks::WakeReason reason)
   if(!_displayOk) {
     return 5000; // no panel registered; nothing to draw
   }
+
+  // Everything from here builds, updates or destroys LVGL objects, and with
+  // LVGL_TASK that races lvgl_task's render. One guard for the whole body
+  // rather than per call site: this function has a dozen early returns, and the
+  // work it does while holding the lock is microseconds now that the screens
+  // skip unchanged writes. Compiles to nothing without LVGL_TASK.
+  LvglLock lvgl_guard;
 
   // Drain queued messages into the message lines, clear them when their time is up.
   if(_head) {

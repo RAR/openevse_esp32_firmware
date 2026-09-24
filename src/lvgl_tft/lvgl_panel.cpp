@@ -657,6 +657,67 @@ static void flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *colo
 
 #endif
 
+#if defined(LVGL_TASK) && !defined(EPOXY_DUINO)
+
+// Cadence of the LVGL task when it has nothing to draw. LVGL's own refresh
+// period (LV_DISP_DEF_REFR_PERIOD, 30 ms) decides when a render actually
+// happens; this only bounds how soon the task notices.
+#ifndef LVGL_TASK_TICK_MS
+#define LVGL_TASK_TICK_MS 5
+#endif
+// Core 1 runs loopTask, core 0 runs the WiFi/lwIP stack. Neither is free, but
+// core 0 is the idler of the two in this firmware and keeping the panel off
+// loopTask's core is the entire point.
+#ifndef LVGL_TASK_CORE
+#define LVGL_TASK_CORE 0
+#endif
+#ifndef LVGL_TASK_STACK
+#define LVGL_TASK_STACK 6144
+#endif
+// Below loopTask (which Arduino runs at 1) would let a busy loopTask starve the
+// display; above it would let the display stall the app. Equal means they
+// round-robin, and they are on different cores anyway.
+#ifndef LVGL_TASK_PRIO
+#define LVGL_TASK_PRIO 1
+#endif
+
+static SemaphoreHandle_t lvgl_mutex = nullptr;
+
+bool lvgl_lock()
+{
+  if(lvgl_mutex == nullptr) {
+    return false;
+  }
+  xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY);
+  return true;
+}
+
+void lvgl_unlock()
+{
+  if(lvgl_mutex != nullptr) {
+    xSemaphoreGiveRecursive(lvgl_mutex);
+  }
+}
+
+static void lvgl_task(void *)
+{
+  for(;;) {
+    // Held across the render AND the flush: the flush reads the draw buffer
+    // that the render just filled, and nothing else may touch LVGL meanwhile.
+    lvgl_lock();
+    uint32_t next = lv_timer_handler();
+    lvgl_unlock();
+
+    // lv_timer_handler() returns how long it is happy to wait. Cap it so a
+    // screen built from another task is picked up promptly, and floor it at one
+    // tick so this never spins.
+    if(next > 100) { next = 100; }
+    vTaskDelay(pdMS_TO_TICKS(next < LVGL_TASK_TICK_MS ? LVGL_TASK_TICK_MS : next));
+  }
+}
+
+#endif // LVGL_TASK && !EPOXY_DUINO
+
 bool lvgl_panel_begin()
 {
   const size_t buf_bytes = DRAW_BUF_PIXELS * sizeof(lv_color_t);
@@ -673,6 +734,24 @@ bool lvgl_panel_begin()
   disp_drv.flush_cb = flush_cb;
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
+
+#if defined(LVGL_TASK) && !defined(EPOXY_DUINO)
+  // Created AFTER the display is registered: the task calls lv_timer_handler()
+  // immediately and that walks the display list.
+  lvgl_mutex = xSemaphoreCreateRecursiveMutex();
+  if(lvgl_mutex == nullptr ||
+     pdPASS != xTaskCreatePinnedToCore(lvgl_task, "lvgl", LVGL_TASK_STACK, nullptr,
+                                       LVGL_TASK_PRIO, nullptr, LVGL_TASK_CORE)) {
+    // Fail loudly rather than silently: with no task, nothing pumps LVGL and
+    // the panel would simply never update. lvgl_lock() tolerates a null mutex,
+    // so the caller's own pump (if it has one) still works.
+    Serial.println("[panel] FATAL: LVGL task would not start; display will not refresh");
+    if(lvgl_mutex != nullptr) { vSemaphoreDelete(lvgl_mutex); lvgl_mutex = nullptr; }
+    return false;
+  }
+  Serial.printf("[panel] LVGL task on core %d, prio %d\n",
+                (int)LVGL_TASK_CORE, (int)LVGL_TASK_PRIO);
+#endif
 
 #if defined(EPOXY_DUINO)
   Serial.printf("[panel] %s LVGL display up %ux%u, 1 buf %u B host heap\n",
